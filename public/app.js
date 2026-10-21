@@ -157,14 +157,49 @@ const kindMatches = (r) => state.kind === "all" || r.kind === state.kind;
 // Linjer som visas just nu: rätt område, och övriga turer bara när de är påslagna.
 const routeShown = (r) => kindMatches(r) && (state.extra || r.tier !== "extra");
 
-// Växla mellan den geografiska kartan och linjenätskartan.
-function setView(view) {
+// Växla mellan den geografiska kartan och linjenätskartan. Linjerna glider mellan
+// sina lägen på kartan och i tunnelbanekartan medan kartan tonas ut eller in.
+let viewSwitch = 0;
+async function setView(view) {
+  if (view === state.view) return;
   state.view = view;
+  const run = ++viewSwitch;
   for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-checked", b.dataset.view === view);
-  $("#schematic").hidden = view !== "schem";
-  $("#map").style.visibility = view === "schem" ? "hidden" : "";
-  if (view === "schem") drawSchematic();
-  else map?.resize();
+  const wrap = $("#schematic"), mapEl = $("#map");
+  if (view === "schem") {
+    wrap.hidden = false;
+    drawSchematic();
+    if (map) {
+      wrap.classList.add("over-map");
+      state.schem.jump(0, { geo: mapGeo() });
+      mapEl.classList.add("faded");
+      await state.schem.morph(1);
+    }
+    if (run !== viewSwitch) return;
+    wrap.classList.remove("over-map");
+    mapEl.style.visibility = "hidden";
+  } else {
+    mapEl.style.visibility = "";
+    map?.resize();
+    if (map && state.schem && !wrap.hidden) {
+      wrap.classList.add("over-map");
+      mapEl.classList.remove("faded");
+      await state.schem.morph(0, { geo: mapGeo() });
+    }
+    if (run !== viewSwitch) return;
+    mapEl.classList.remove("faded");
+    wrap.classList.remove("over-map");
+    wrap.hidden = true;
+  }
+}
+
+// Hållplatsgruppernas lägen på kartan, i linjenätskartans koordinater.
+function mapGeo() {
+  const { k, tx, ty } = state.schem.transform();
+  return (g) => {
+    const p = map.project([groups[g].lon, groups[g].lat]);
+    return [(p.x - tx) / k, (p.y - ty) / k];
+  };
 }
 
 function drawSchematic() {

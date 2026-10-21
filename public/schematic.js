@@ -286,12 +286,18 @@ function offsetLine(line, o) {
 }
 
 // --- Ritning -------------------------------------------------------------------
+//
+// Samma ritning visar både den geografiska kartan (t = 0) och tunnelbanekartan (t = 1).
+// Varje sträcka har en lista med punkter som finns i båda lägena: hållplatserna och
+// tunnelbanekartans hörn. Mellan lägena glider punkterna rakt mot sin plats, så att
+// linjerna ser ut att sträckas ut och räta upp sig.
 
 const LW = 5; // linjebredd
 const GAP = 1.5;
 
-// extra: linjer som ritas tunna och streckade vid sidan av de vanliga (övriga turer).
-export function renderSchematic(container, net, groups, layout, { onStop, onRoute, selectedRoute = null, extra = new Set() } = {}) {
+// opts.geo(g) ger hållplatsgruppens geografiska läge i kartans enheter. Utan den
+// projiceras longitud/latitud in i samma ruta som tunnelbanekartan.
+export function renderSchematic(container, net, groups, layout, { onStop, onRoute, selectedRoute = null, extra = new Set(), geo = null, mode = 1 } = {}) {
   container.replaceChildren();
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("class", "schematic");
@@ -307,84 +313,71 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   const labelsG = el("g", { class: "labels" });
   view.append(extraG, linesG, stopsG, labelsG);
 
-  const labels = [];
   const step = LW + GAP;
-  const bundle = new Map(); // nod -> största antal linjer bredvid varandra
-  const routePaths = []; // { el, line, slot } där slot är förskjutningen i antal linjebredder
+  let geoOf = geo || defaultGeo(groups, layout);
+  let t = mode;
+  let k = 1;
+
+  // Sträckornas punkter: arclängd längs tunnelbanelinjen och läget som andel av hållplatsindex.
+  for (const c of layout.chains) {
+    const n = c.nodes.length;
+    const lens = [0];
+    for (let i = 1; i < c.line.length; i++) lens.push(lens[i - 1] + Math.hypot(c.line[i][0] - c.line[i - 1][0], c.line[i][1] - c.line[i - 1][1]));
+    const L = lens[lens.length - 1] || 1;
+    const marks = new Set([...lens.map((l) => l / L), ...c.nodes.map((_, i) => i / (n - 1))]);
+    c.verts = [...marks].sort((a, b) => a - b).map((f) => ({ f, schem: along(c.line, f), idx: f * (n - 1) }));
+  }
+  const geoVert = (c, v) => {
+    const i = Math.min(Math.floor(v.idx), c.nodes.length - 2);
+    const u = v.idx - i;
+    const a = geoOf(c.nodes[i]), b = geoOf(c.nodes[i + 1]);
+    return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u];
+  };
+  const lerp = (a, b, s) => [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s];
+
+  const bundle = new Map();
+  const routePaths = [];
   for (const c of layout.chains) {
     const mains = c.routes.filter((ri) => !extra.has(ri));
     const extras = c.routes.filter((ri) => extra.has(ri));
-    const k = mains.length;
+    const kk = mains.length;
     const add = (ri, slot, isExtra) => {
       const path = el("path", { class: isExtra ? "route extra" : "route", stroke: net.routes[ri].c, "data-route": ri });
       path.addEventListener("click", () => onRoute?.(ri));
       (isExtra ? extraG : linesG).append(path);
-      routePaths.push({ el: path, line: c.line, slot, isExtra });
+      routePaths.push({ el: path, c, slot, isExtra });
     };
-    mains.forEach((ri, i) => add(ri, i - (k - 1) / 2, false));
+    mains.forEach((ri, i) => add(ri, i - (kk - 1) / 2, false));
     // Övriga turer läggs utanför de vanliga linjerna, eller i mitten om de är ensamma.
-    extras.forEach((ri, j) => add(ri, k ? k / 2 + 0.2 + j * 0.6 : (j - (extras.length - 1) / 2) * 0.6, true));
-    for (const g of c.nodes) bundle.set(g, Math.max(bundle.get(g) || 0, Math.max(k, 1)));
+    extras.forEach((ri, j) => add(ri, kk ? kk / 2 + 0.2 + j * 0.6 : (j - (extras.length - 1) / 2) * 0.6, true));
+    for (const g of c.nodes) bundle.set(g, Math.max(bundle.get(g) || 0, Math.max(kk, 1)));
   }
 
-  // Hållplatser längs sträckorna.
-  const stations = []; // { el, p, angle, w } eller { el, p, r } för knutpunkter
+  // Hållplatser: vanliga som avlånga markeringar tvärs över linjerna, knutpunkter som ringar.
+  const stations = [];
   const placed = new Set();
   for (const c of layout.chains) {
-    for (let i = 0; i < c.nodes.length; i++) {
+    const w = Math.max(1, c.routes.filter((ri) => !extra.has(ri)).length) * step + 2;
+    for (let i = 1; i < c.nodes.length - 1; i++) {
       const g = c.nodes[i];
       if (layout.key.has(g) || placed.has(g)) continue;
       placed.add(g);
-      const p = c.nodePos[i];
-      const dir = segDir(c.line, p);
-      const w = Math.max(1, c.routes.filter((ri) => !extra.has(ri)).length) * step + 2;
       const mark = el("rect", { class: "station" });
       hook(mark, g);
       stopsG.append(mark);
-      stations.push({ el: mark, p, angle: (Math.atan2(dir[1], dir[0]) * 180) / Math.PI, w });
-      label(g, p, dir, false, w / 2);
+      stations.push({ el: mark, g, c, i, w });
     }
   }
-  // Knutpunkter.
   for (const g of layout.key) {
-    const p = layout.pos.get(g);
     const r = Math.min(9, Math.max(6, ((bundle.get(g) || 1) * step) / 2 + 2));
-    const mark = el("circle", { cx: p[0], cy: p[1], class: "station key" });
+    const mark = el("circle", { class: "station key" });
     hook(mark, g);
     stopsG.append(mark);
-    stations.push({ el: mark, p, r });
-    const c = layout.chains.find((c) => c.nodes[0] === g || c.nodes[c.nodes.length - 1] === g);
-    const dir = c ? segDir(c.line, p) : [1, 0];
-    label(g, p, dir, true, r);
+    stations.push({ el: mark, g, r });
   }
-
-  // Ritar om linjer och hållplatser för zoomnivån k, så att de håller en lagom
-  // tjocklek på skärmen i stället för att växa med kartan.
-  function drawGeometry(k) {
-    const f = sizeFactor(k);
-    for (const { el: path, line, slot, isExtra } of routePaths) {
-      const pts = offsetLine(line, slot * step * f);
-      path.setAttribute("d", `M${pts.map((p) => p.map((v) => v.toFixed(2)).join(" ")).join("L")}`);
-      path.style.strokeWidth = `${(isExtra ? LW * 0.45 : LW) * f}px`;
-      if (isExtra) path.style.strokeDasharray = `${5 * f} ${3.5 * f}`;
-    }
-    for (const st of stations) {
-      st.el.style.strokeWidth = `${1.5 * f}px`;
-      if (st.r) {
-        st.el.setAttribute("r", st.r * f);
-        continue;
-      }
-      const w = st.w * f, h = 7 * f;
-      st.el.setAttribute("x", -h / 2);
-      st.el.setAttribute("y", -w / 2);
-      st.el.setAttribute("width", h);
-      st.el.setAttribute("height", w);
-      st.el.setAttribute("rx", h / 2);
-      st.el.setAttribute("transform", `translate(${st.p[0].toFixed(2)} ${st.p[1].toFixed(2)}) rotate(${st.angle})`);
-    }
-    marker.setAttribute("r", 13 * f);
-    marker.style.strokeWidth = `${3 * f}px`;
-  }
+  const marker = el("circle", { class: "picked", visibility: "hidden" });
+  stopsG.append(marker);
+  let picked = null;
 
   function hook(node, g) {
     node.setAttribute("tabindex", "0");
@@ -394,59 +387,173 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     title.textContent = groups[g].name;
     node.append(title);
     const pick = () => {
-      mark(g);
+      picked = g;
+      draw();
       onStop?.(g);
     };
     node.addEventListener("click", pick);
     node.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && pick());
   }
 
-  function label(g, p, dir, major, pad) {
-    // Text vinkelrätt ut från linjen; längs vågräta linjer snett uppåt så att namnen inte krockar.
-    let nx = -dir[1], ny = dir[0];
-    if (nx < 0 || (nx === 0 && ny > 0)) [nx, ny] = [-nx, -ny];
-    labels.push({ text: shortName(groups[g].name), p, nx, ny, pad, major, rotate: Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size });
+  // Aktuellt läge för en hållplatsgrupp vid blandningen t.
+  const nodeAt = (g) => lerp(geoOf(g), layout.pos.get(g), t);
+
+  function draw() {
+    const f = sizeFactor(k);
+    const pts = new Map(layout.chains.map((c) => [c, c.verts.map((v) => lerp(geoVert(c, v), v.schem, t))]));
+    for (const { el: path, c, slot, isExtra } of routePaths) {
+      const line = offsetLine(dedupePts(pts.get(c)), slot * step * f);
+      path.setAttribute("d", `M${line.map((p) => p.map((v) => v.toFixed(2)).join(" ")).join("L")}`);
+      path.style.strokeWidth = `${(isExtra ? LW * 0.45 : LW) * f}px`;
+      if (isExtra) path.style.strokeDasharray = `${5 * f} ${3.5 * f}`;
+    }
+    for (const st of stations) {
+      st.el.style.strokeWidth = `${1.5 * f}px`;
+      if (st.r) {
+        const p = nodeAt(st.g);
+        st.el.setAttribute("cx", p[0]);
+        st.el.setAttribute("cy", p[1]);
+        st.el.setAttribute("r", st.r * f);
+        continue;
+      }
+      const line = pts.get(st.c);
+      const p = line[st.c.verts.findIndex((v) => Math.abs(v.idx - st.i) < 1e-9)];
+      const dir = segDir(line, p);
+      const w = st.w * f, h = 7 * f;
+      st.el.setAttribute("x", -h / 2);
+      st.el.setAttribute("y", -w / 2);
+      st.el.setAttribute("width", h);
+      st.el.setAttribute("height", w);
+      st.el.setAttribute("rx", h / 2);
+      st.el.setAttribute("transform", `translate(${p[0].toFixed(2)} ${p[1].toFixed(2)}) rotate(${(Math.atan2(dir[1], dir[0]) * 180) / Math.PI})`);
+      st.p = p;
+      st.dir = dir;
+    }
+    if (picked != null && layout.pos.has(picked)) {
+      const p = nodeAt(picked);
+      marker.setAttribute("cx", p[0]);
+      marker.setAttribute("cy", p[1]);
+      marker.setAttribute("r", 13 * f);
+      marker.style.strokeWidth = `${3 * f}px`;
+      marker.setAttribute("visibility", "visible");
+    }
   }
 
-  const marker = el("circle", { r: 13, class: "picked", visibility: "hidden" });
-  stopsG.append(marker);
-  function mark(g) {
-    const p = layout.pos.get(g);
-    if (!p) return;
-    marker.setAttribute("cx", p[0]);
-    marker.setAttribute("cy", p[1]);
-    marker.setAttribute("visibility", "visible");
-  }
-
-  // Panorering och zoom. Namnen behåller sin storlek på skärmen när man zoomar,
-  // så fler namn får plats ju längre in man zoomar.
-  drawGeometry(1);
-  const content = view.getBBox();
-  const names = labelLayer(labelsG, labels);
-  const pz = panZoom(svg, view, content, (k) => {
-    drawGeometry(k);
+  // Namnen placeras om för läget: i tunnelbanekartan vinkelrätt ut från linjen,
+  // i den geografiska till höger om hållplatsen.
+  let names = null;
+  function buildLabels() {
+    labelsG.replaceChildren();
+    const items = [];
+    const schem = t > 0.5;
+    for (const st of stations) {
+      const g = st.g;
+      const major = !!st.r;
+      const p = st.r ? nodeAt(g) : st.p;
+      let dir = [0, 1];
+      if (schem) {
+        if (st.dir) dir = st.dir;
+        else {
+          const c = layout.chains.find((c) => c.nodes[0] === g || c.nodes[c.nodes.length - 1] === g);
+          if (c) dir = segDir(c.line, layout.pos.get(g));
+        }
+      }
+      let nx = -dir[1], ny = dir[0];
+      if (nx < 0 || (nx === 0 && ny > 0)) [nx, ny] = [-nx, -ny];
+      const pad = st.r || st.w / 2;
+      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, rotate: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size });
+    }
+    names = labelLayer(labelsG, items);
     names.update(k);
+  }
+
+  draw();
+  const content = view.getBBox();
+  const pz = panZoom(svg, view, content, (nk) => {
+    k = nk;
+    draw();
+    names?.update(k);
   });
+  buildLabels();
+
+  let anim = null;
   const api = {
+    get mode() {
+      return t;
+    },
     select(ri) {
       svg.classList.toggle("has-sel", ri != null);
       for (const g of [extraG, linesG]) {
         for (const p of g.children) p.classList.toggle("sel", +p.dataset.route === ri);
-        // Lägg vald linje överst.
         for (const p of [...g.children]) if (+p.dataset.route === ri) g.append(p);
       }
     },
     fit: pz.fit,
     zoom: pz.zoom,
+    transform: pz.transform,
     focus(g) {
-      const p = layout.pos.get(g);
-      if (!p) return;
-      mark(g);
-      pz.center(p, 2.5);
+      if (!layout.pos.has(g)) return;
+      picked = g;
+      draw();
+      pz.center(nodeAt(g), 2.5);
+    },
+    // Byt läge direkt, utan animation.
+    jump(to, { geo: g } = {}) {
+      if (g) geoOf = g;
+      cancelAnimationFrame(anim);
+      t = to;
+      draw();
+      buildLabels();
+    },
+    // Glid till läget `to` (0 = geografiskt, 1 = tunnelbana). geo kan bytas samtidigt.
+    morph(to, { ms = 900, geo: g } = {}) {
+      if (g) geoOf = g;
+      cancelAnimationFrame(anim);
+      const from = t;
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      svg.classList.add("morphing");
+      return new Promise((done) => {
+        const start = performance.now();
+        const frame = (now) => {
+          const s = reduce ? 1 : Math.min(1, (now - start) / ms);
+          const e = s < 0.5 ? 4 * s * s * s : 1 - (-2 * s + 2) ** 3 / 2;
+          t = from + (to - from) * e;
+          draw();
+          if (s < 1) anim = requestAnimationFrame(frame);
+          else {
+            t = to;
+            draw();
+            svg.classList.remove("morphing");
+            buildLabels();
+            done();
+          }
+        };
+        anim = requestAnimationFrame(frame);
+      });
     },
   };
   api.select(selectedRoute);
   return api;
+}
+
+// Geografiska lägen inpassade i tunnelbanekartans ruta, med rätt proportioner.
+function defaultGeo(groups, layout) {
+  const nodes = [...layout.pos.keys()];
+  const lat0 = nodes.reduce((s, g) => s + groups[g].lat, 0) / nodes.length;
+  const cos0 = Math.cos((lat0 * Math.PI) / 180);
+  const raw = new Map(nodes.map((g) => [g, [groups[g].lon * cos0, -groups[g].lat]]));
+  const box = (pts) => {
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  };
+  const [ax, ay, bx, by] = box([...raw.values()]);
+  const [sx, sy, ex, ey] = box([...layout.pos.values()]);
+  const s = Math.min((ex - sx) / (bx - ax || 1), (ey - sy) / (by - ay || 1));
+  const ox = (sx + ex) / 2 - ((ax + bx) / 2) * s, oy = (sy + ey) / 2 - ((ay + by) / 2) * s;
+  return (g) => {
+    const p = raw.get(g) || [groups[g].lon * cos0, -groups[g].lat];
+    return [p[0] * s + ox, p[1] * s + oy];
+  };
 }
 
 // Hur stora linjer och hållplatser ritas i kartans enheter vid zoom k. På skärmen
@@ -599,6 +706,8 @@ export function panZoom(svg, view, box, onZoom) {
   return {
     fit,
     zoom: (f) => zoomAt(f, svg.clientWidth / 2, svg.clientHeight / 2),
+    // Nuvarande vy: skärmpunkt = kartpunkt * k + [tx, ty].
+    transform: () => ({ k, tx, ty }),
     // Centrera på p, minst `zoom` gånger inzoomat jämfört med hela kartan.
     center(p, zoom) {
       const w = svg.clientWidth, h = svg.clientHeight;
