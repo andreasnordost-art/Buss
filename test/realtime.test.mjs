@@ -64,3 +64,23 @@ await new Promise((r) => setTimeout(r, 10));
 await worker.fetch(req(), env, ctx);
 assert.equal(calls, 1, "andra anropet ska komma från cachen");
 console.log("worker ok");
+
+// /api/* skickas vidare till Busskollens API med CORS och cache; okända adresser nekas.
+calls = 0;
+globalThis.fetch = async (url) => {
+  calls++;
+  assert.equal(String(url), "https://busskollen.test/api/departures?stopId=S1");
+  return new Response(JSON.stringify({ departures: [{ line: "401" }] }), { headers: { "Content-Type": "application/json" } });
+};
+const apiEnv = { ...env, ORIGINAL_API: "https://busskollen.test" };
+const apiReq = (path) => new Request(`https://w.dev${path}`, { headers: { Origin: "https://example.github.io" } });
+res = await worker.fetch(apiReq("/api/departures?stopId=S1"), apiEnv, ctx);
+assert.equal(res.headers.get("Access-Control-Allow-Origin"), "https://example.github.io");
+assert.equal((await res.json()).departures[0].line, "401");
+await new Promise((r) => setTimeout(r, 10));
+await worker.fetch(apiReq("/api/departures?stopId=S1"), apiEnv, ctx);
+assert.equal(calls, 1, "avgångarna ska komma från cachen andra gången");
+res = await worker.fetch(apiReq("/api/admin/import"), apiEnv, ctx);
+assert.equal(res.status, 404, "bara kända adresser vidarebefordras");
+assert.equal(calls, 1);
+console.log("proxy ok");

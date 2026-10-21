@@ -6,8 +6,22 @@
 //   GET /vehicles  bussar inom kommunen
 //   GET /updates   förseningar per tur
 //   GET /alerts    trafikstörningar
+//
+//   GET /api/...   vidarebefordras till Busskollens API (originalsidan), som saknar
+//                  CORS. Ger hållplatser, avgångar, reseförslag, bussar och störningar.
 
 const BBOX = [17.9, 62.95, 19.5, 63.78]; // samma som MUNICIPALITY_BBOX i config.mjs
+
+// Busskollens API: tillåtna adresser och cachetid i sekunder.
+const UPSTREAM = {
+  stops: 3600,
+  vehicles: 10,
+  departures: 20,
+  journey: 10,
+  plan: 60,
+  alerts: 120,
+  "network-geometry": 3600,
+};
 
 const FEEDS = {
   vehicles: { file: "VehiclePositions.pb", ttl: 15, transform: vehicles },
@@ -20,6 +34,8 @@ export default {
     const url = new URL(request.url);
     const cors = corsHeaders(request, env);
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
+    const api = url.pathname.match(/^\/api\/([a-z-]+)\/?$/);
+    if (api) return upstream(api[1], url, env, ctx, cors);
     const feed = FEEDS[url.pathname.replace(/^\/+|\/+$/g, "")];
     if (!feed) return json({ error: "Okänd adress" }, 404, cors);
 
@@ -28,12 +44,12 @@ export default {
     const cache = caches.default;
     let res = await cache.match(cacheKey);
     if (!res) {
-      const upstream = await fetch(
+      const feedRes = await fetch(
         `https://opendata.samtrafiken.se/gtfs-rt/${env.OPERATOR || "dintur"}/${feed.file}?key=${env.TRAFIKLAB_RT_KEY}`,
         { headers: { "Accept-Encoding": "gzip" } },
       );
-      if (!upstream.ok) return json({ error: `Trafiklab svarade ${upstream.status}` }, 502, cors);
-      const msg = decodeFeed(new Uint8Array(await upstream.arrayBuffer()));
+      if (!feedRes.ok) return json({ error: `Trafiklab svarade ${feedRes.status}` }, 502, cors);
+      const msg = decodeFeed(new Uint8Array(await feedRes.arrayBuffer()));
       const body = JSON.stringify({ time: msg.time, data: feed.transform(msg.entities) });
       res = new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${ttl}` } });
       ctx.waitUntil(cache.put(cacheKey, res.clone()));
@@ -43,6 +59,23 @@ export default {
     return out;
   },
 };
+
+async function upstream(name, url, env, ctx, cors) {
+  const ttl = UPSTREAM[name];
+  if (ttl == null) return json({ error: "Okänd adress" }, 404, cors);
+  const target = `${env.ORIGINAL_API || "https://ovik-live.andreasnordost.chatgpt.site"}/api/${name}${url.search}`;
+  const cacheKey = new Request(target);
+  const cache = caches.default;
+  let res = await cache.match(cacheKey);
+  if (!res) {
+    const up = await fetch(target, { headers: { Accept: "application/json" } });
+    res = new Response(up.body, { status: up.status, headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${up.ok ? ttl : 5}` } });
+    if (up.ok) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+  }
+  const out = new Response(res.body, res);
+  for (const [k, v] of Object.entries(cors)) out.headers.set(k, v);
+  return out;
+}
 
 function corsHeaders(request, env) {
   const allowed = (env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());

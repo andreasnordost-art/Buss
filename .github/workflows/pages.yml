@@ -1,4 +1,4 @@
-# Bygger tidtabellsdata från Trafiklab varje natt och publicerar sidan på GitHub Pages.
+# Hämtar linjenätet varje natt och publicerar sidan på GitHub Pages.
 name: Data och sida
 
 on:
@@ -28,19 +28,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      # Ladda ner GTFS högst en gång per dag så att Trafiklabs kvot räcker.
-      - id: day
-        run: echo "date=$(TZ=Europe/Stockholm date +%F)" >> "$GITHUB_OUTPUT"
-      - id: cache
-        uses: actions/cache@v4
-        with:
-          path: gtfs.zip
-          key: gtfs-${{ steps.day.outputs.date }}
-      - if: steps.cache.outputs.cache-hit != 'true'
-        env:
-          KEY: ${{ secrets.TRAFIKLAB_STATIC_KEY }}
-        run: curl -fsSL --compressed -o gtfs.zip "https://opendata.samtrafiken.se/gtfs/dintur/dintur.zip?key=$KEY"
-      - run: node scripts/build-data.mjs --zip gtfs.zip
+      # Linjenätet (hållplatser och vägmatchade körvägar) från Busskollens API.
+      - run: node scripts/import-original.mjs
       - name: Realtidsadress
         env:
           RT_API_URL: ${{ vars.RT_API_URL }}
