@@ -311,24 +311,20 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   const labels = [];
   const step = LW + GAP;
   const bundle = new Map(); // nod -> största antal linjer bredvid varandra
+  const routePaths = []; // { el, line, slot } där slot är förskjutningen i antal linjebredder
   for (const c of layout.chains) {
     const k = c.routes.length;
     c.routes.forEach((ri, i) => {
-      const o = (i - (k - 1) / 2) * step;
-      const pts = offsetLine(c.line, o);
-      const path = el("path", {
-        d: `M${pts.map((p) => p.map((v) => v.toFixed(1)).join(" ")).join("L")}`,
-        class: "route",
-        stroke: net.routes[ri].c,
-        "data-route": ri,
-      });
+      const path = el("path", { class: "route", stroke: net.routes[ri].c, "data-route": ri });
       path.addEventListener("click", () => onRoute?.(ri));
       linesG.append(path);
+      routePaths.push({ el: path, line: c.line, slot: i - (k - 1) / 2 });
     });
     for (const g of c.nodes) bundle.set(g, Math.max(bundle.get(g) || 0, k));
   }
 
   // Hållplatser längs sträckorna.
+  const stations = []; // { el, p, angle, w } eller { el, p, r } för knutpunkter
   const placed = new Set();
   for (const c of layout.chains) {
     const k = c.routes.length;
@@ -339,13 +335,10 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       const p = c.nodePos[i];
       const dir = segDir(c.line, p);
       const w = k * step + 2;
-      const mark = el("rect", {
-        x: -3.5, y: -w / 2, width: 7, height: w, rx: 3.5,
-        class: "station",
-        transform: `translate(${p[0].toFixed(1)} ${p[1].toFixed(1)}) rotate(${(Math.atan2(dir[1], dir[0]) * 180) / Math.PI})`,
-      });
+      const mark = el("rect", { class: "station" });
       hook(mark, g);
       stopsG.append(mark);
+      stations.push({ el: mark, p, angle: (Math.atan2(dir[1], dir[0]) * 180) / Math.PI, w });
       label(g, p, dir, false, w / 2);
     }
   }
@@ -353,12 +346,40 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   for (const g of layout.key) {
     const p = layout.pos.get(g);
     const r = Math.min(9, Math.max(6, ((bundle.get(g) || 1) * step) / 2 + 2));
-    const mark = el("circle", { cx: p[0], cy: p[1], r, class: "station key" });
+    const mark = el("circle", { cx: p[0], cy: p[1], class: "station key" });
     hook(mark, g);
     stopsG.append(mark);
+    stations.push({ el: mark, p, r });
     const c = layout.chains.find((c) => c.nodes[0] === g || c.nodes[c.nodes.length - 1] === g);
     const dir = c ? segDir(c.line, p) : [1, 0];
     label(g, p, dir, true, r);
+  }
+
+  // Ritar om linjer och hållplatser för zoomnivån k, så att de håller en lagom
+  // tjocklek på skärmen i stället för att växa med kartan.
+  function drawGeometry(k) {
+    const f = sizeFactor(k);
+    for (const { el: path, line, slot } of routePaths) {
+      const pts = offsetLine(line, slot * step * f);
+      path.setAttribute("d", `M${pts.map((p) => p.map((v) => v.toFixed(2)).join(" ")).join("L")}`);
+      path.style.strokeWidth = `${LW * f}px`;
+    }
+    for (const st of stations) {
+      st.el.style.strokeWidth = `${1.5 * f}px`;
+      if (st.r) {
+        st.el.setAttribute("r", st.r * f);
+        continue;
+      }
+      const w = st.w * f, h = 7 * f;
+      st.el.setAttribute("x", -h / 2);
+      st.el.setAttribute("y", -w / 2);
+      st.el.setAttribute("width", h);
+      st.el.setAttribute("height", w);
+      st.el.setAttribute("rx", h / 2);
+      st.el.setAttribute("transform", `translate(${st.p[0].toFixed(2)} ${st.p[1].toFixed(2)}) rotate(${st.angle})`);
+    }
+    marker.setAttribute("r", 13 * f);
+    marker.style.strokeWidth = `${3 * f}px`;
   }
 
   function hook(node, g) {
@@ -395,9 +416,13 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
 
   // Panorering och zoom. Namnen behåller sin storlek på skärmen när man zoomar,
   // så fler namn får plats ju längre in man zoomar.
+  drawGeometry(1);
   const content = view.getBBox();
   const names = labelLayer(labelsG, labels);
-  const pz = panZoom(svg, view, content, names.update);
+  const pz = panZoom(svg, view, content, (k) => {
+    drawGeometry(k);
+    names.update(k);
+  });
   const api = {
     select(ri) {
       svg.classList.toggle("has-sel", ri != null);
@@ -418,8 +443,14 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   return api;
 }
 
+// Hur stora linjer och hållplatser ritas i kartans enheter vid zoom k. På skärmen
+// växer de bara måttligt: mellan 0,6 och 1,6 gånger grundstorleken.
+export function sizeFactor(k) {
+  return Math.max(0.6, Math.min(1.6, k)) / k;
+}
+
 // Hållplatsnamn i konstant skärmstorlek. items: { text, p, nx, ny, pad, major, rotate, prio }.
-// pad är i kartans enheter (hållplatsens radie), övriga avstånd i skärmpixlar.
+// pad är hållplatsens radie i grundstorlek och skalas som hållplatsen (se sizeFactor).
 export function labelLayer(group, items) {
   const nodes = items.map((it) => {
     const t = el("text", { class: it.major ? "lbl major" : "lbl" });
@@ -434,10 +465,11 @@ export function labelLayer(group, items) {
       t.style.fontSize = `${(it.major ? 13 : 11.5) / k}px`;
       t.style.strokeWidth = `${3.5 / k}px`;
       const [x, y] = it.p;
+      const pad = it.pad * sizeFactor(k);
       if (it.rotate) {
-        t.setAttribute("transform", `translate(${x + 3 / k} ${y - it.pad - 3 / k}) rotate(-45)`);
+        t.setAttribute("transform", `translate(${x + 3 / k} ${y - pad - 3 / k}) rotate(-45)`);
       } else {
-        const gap = it.pad + 5 / k;
+        const gap = pad + 5 / k;
         t.setAttribute("x", x + it.nx * gap);
         t.setAttribute("y", y + it.ny * gap + 4 / k);
         t.setAttribute("text-anchor", it.nx > 0.3 ? "start" : it.nx < -0.3 ? "end" : "middle");
