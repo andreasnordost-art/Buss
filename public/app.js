@@ -5,6 +5,9 @@
 //   data/days/ÅÅÅÅ-MM-DD.json dagens turer med tider
 //   CONFIG.api/vehicles|updates|alerts  realtid via vår Cloudflare Worker
 
+import { groupStops, distance } from "./network.js";
+import { layoutSchematic, renderSchematic } from "./schematic.js";
+
 const CONFIG = { api: "", vehicleSeconds: 20, updateSeconds: 30, ...(window.BUSS_CONFIG || {}) };
 const TZ = "Europe/Stockholm";
 const STALE_SECONDS = 120;
@@ -14,6 +17,8 @@ const PALETTE = ["#0b6e8a", "#c2410c", "#15803d", "#7c3aed", "#be185d", "#0369a1
 const $ = (s) => document.querySelector(s);
 const state = {
   kind: "all",
+  view: "map", // "map" eller "schem" (linjenätskarta)
+  schem: null,
   route: null, // vald linje (index)
   group: null, // vald hållplatsgrupp
   vehicles: new Map(), // id -> { marker, data, from, to }
@@ -30,7 +35,7 @@ boot().catch((err) => {
 async function boot() {
   net = await getJSON("data/network.json");
   net.routes.forEach((r, i) => (r.c = r.color || PALETTE[i % PALETTE.length]));
-  buildGroups();
+  ({ groups, stopGroup, labelToGroup } = groupStops(net));
   await loadTrips();
   buildUi();
   initMap();
@@ -66,33 +71,6 @@ async function getJSON(url) {
   return res.json();
 }
 
-// Hållplatslägen med samma namn inom 400 m blir en grupp ("Resecentrum" läge A, B, C...).
-function buildGroups() {
-  groups = [];
-  stopGroup = new Array(net.stops.length);
-  const byName = new Map();
-  net.stops.forEach(([, name, lat, lon], i) => {
-    const list = byName.get(name) || [];
-    let g = list.find((g) => distance(g.lat, g.lon, lat, lon) < 400);
-    if (!g) {
-      g = { name, lat, lon, stops: [], routes: new Set() };
-      list.push(g);
-      groups.push(g);
-      byName.set(name, list);
-    }
-    g.stops.push(i);
-    stopGroup[i] = groups.indexOf(g);
-  });
-  net.routes.forEach((r, ri) => r.variants.forEach((v) => v.stops.forEach((s) => groups[stopGroup[s]].routes.add(ri))));
-  // Unika namn i söklistan: lägg till linjenummer när samma namn finns på flera ställen.
-  labelToGroup = new Map();
-  groups.forEach((g, gi) => {
-    const dup = byName.get(g.name).length > 1;
-    g.label = dup ? `${g.name} (linje ${[...g.routes].map((r) => net.routes[r].name).join(", ")})` : g.name;
-    labelToGroup.set(g.label.toLowerCase(), gi);
-  });
-}
-
 async function loadTrips() {
   const { date } = stockholm();
   const yesterday = stockholm(new Date(Date.now() - 864e5)).date;
@@ -125,8 +103,11 @@ function delayAt(trip, stopIdx) {
 function buildUi() {
   $("#stop-names").append(...groups.map((g) => Object.assign(document.createElement("option"), { value: g.label })));
 
-  for (const b of document.querySelectorAll(".seg button")) {
+  for (const b of document.querySelectorAll("[data-kind]")) {
     b.addEventListener("click", () => setKind(b.dataset.kind));
+  }
+  for (const b of document.querySelectorAll("[data-view]")) {
+    b.addEventListener("click", () => setView(b.dataset.view));
   }
   for (const tab of document.querySelectorAll('[role="tab"]')) {
     tab.addEventListener("click", () => showTab(tab.id));
@@ -163,13 +144,34 @@ function showTab(id) {
 
 function setKind(kind) {
   state.kind = kind;
-  for (const b of document.querySelectorAll(".seg button")) b.setAttribute("aria-checked", b.dataset.kind === kind);
+  for (const b of document.querySelectorAll("[data-kind]")) b.setAttribute("aria-checked", b.dataset.kind === kind);
   if (state.route != null && !kindMatches(net.routes[state.route])) selectRoute(null);
   applyMapFilters();
+  if (state.view === "schem") drawSchematic();
   renderLineList();
   for (const v of state.vehicles.values()) styleMarker(v);
 }
 const kindMatches = (r) => state.kind === "all" || r.kind === state.kind;
+
+// Växla mellan den geografiska kartan och linjenätskartan.
+function setView(view) {
+  state.view = view;
+  for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-checked", b.dataset.view === view);
+  $("#schematic").hidden = view !== "schem";
+  $("#map").style.visibility = view === "schem" ? "hidden" : "";
+  if (view === "schem") drawSchematic();
+  else map?.resize();
+}
+
+function drawSchematic() {
+  const idx = net.routes.map((r, i) => i).filter((i) => kindMatches(net.routes[i]));
+  const layout = layoutSchematic(net, groups, stopGroup, idx, state.kind === "all" ? { power: 0.35 } : {});
+  state.schem = renderSchematic($("#schematic"), net, groups, layout, {
+    onStop: (g) => selectGroup(g),
+    onRoute: (ri) => selectRoute(ri),
+    selectedRoute: state.route,
+  });
+}
 
 function setStatus(text, cls = "") {
   const el = $("#status");
@@ -300,6 +302,7 @@ function applyMapFilters() {
 function selectRoute(ri, { fit = false } = {}) {
   state.route = ri;
   applyMapFilters();
+  state.schem?.select(ri);
   for (const v of state.vehicles.values()) styleMarker(v);
   const box = $("#lineinfo");
   if (ri == null) {
@@ -342,7 +345,8 @@ function selectGroup(gi, { fly = false } = {}) {
   showTab("tab-dep");
   renderDepartures();
   highlightGroup();
-  if (fly && map) map.flyTo({ center: [groups[gi].lon, groups[gi].lat], zoom: Math.max(map.getZoom(), 15) });
+  if (fly && state.view === "schem") state.schem?.focus(gi);
+  else if (fly && map) map.flyTo({ center: [groups[gi].lon, groups[gi].lat], zoom: Math.max(map.getZoom(), 15) });
 }
 
 function highlightGroup() {
@@ -687,13 +691,4 @@ function journeyRow(j) {
     li.append(leg);
   }
   return li;
-}
-
-// --- Hjälpare ------------------------------------------------------------------
-
-function distance(lat1, lon1, lat2, lon2) {
-  const k = Math.PI / 180;
-  const x = (lon2 - lon1) * k * Math.cos(((lat1 + lat2) / 2) * k);
-  const y = (lat2 - lat1) * k;
-  return Math.sqrt(x * x + y * y) * 6371000;
 }

@@ -92,7 +92,8 @@ for (const tripId of keptTrips) {
   if (!route) continue;
   let entry = routes.get(route.route_id);
   if (!entry) routes.set(route.route_id, (entry = { route, variants: new Map() }));
-  const dir = trip.direction_id === "1" ? 1 : 0;
+  // Saknas direction_id räknas riktningen ut i efterhand (se inferDirections).
+  const dir = trip.direction_id === "1" ? 1 : trip.direction_id === "0" ? 0 : null;
   const hasShape = trip.shape_id && shapePoints.has(trip.shape_id);
   const key = hasShape ? `s:${trip.shape_id}` : `p:${dir}:${stops.map((s) => s.stop).join(">")}`;
   let v = entry.variants.get(key);
@@ -104,6 +105,8 @@ for (const tripId of keptTrips) {
   tripVariant.set(tripId, v);
 }
 
+inferDirections();
+
 // --- Index och utdata --------------------------------------------------------
 const usedStops = new Set();
 for (const list of tripStops.values()) for (const s of list) usedStops.add(s.stop);
@@ -114,8 +117,13 @@ const routeList = [...routes.values()].sort((a, b) => routeSort(a.route, b.route
 const variantIndex = new Map(); // variant -> [routeIdx, variantIdx]
 const networkRoutes = routeList.map(({ route, variants }, ri) => {
   const vs = [...variants.values()].sort((a, b) => b.trips - a.trips);
+  // Huvudformen per riktning: den som täcker mest av linjen, vägd med antal turer,
+  // så att en kort förstärkningstur inte blir linjens ansikte utåt.
   const mainByDir = new Map();
-  for (const v of vs) if (!mainByDir.has(v.dir)) mainByDir.set(v.dir, v);
+  for (const v of vs) {
+    const best = mainByDir.get(v.dir);
+    if (!best || v.trips * v.stops.length > best.trips * best.stops.length) mainByDir.set(v.dir, v);
+  }
   const allStops = vs.flatMap((v) => v.stops.map((id) => stopById.get(id)));
   const kind = cfg.KIND_OVERRIDES[route.route_short_name] ??
     (allStops.every((s) => inBox([s.lon, s.lat], cfg.TOWN_BBOX)) ? "tatort" : "landsbygd");
@@ -187,6 +195,24 @@ function variantPath(v) {
     pts = v.stops.map((id) => stopById.get(id)).map((s) => [s.lon, s.lat]);
   }
   return simplify(dedupe(pts), cfg.SIMPLIFY_METERS).map(([lon, lat]) => [round(lon), round(lat)]);
+}
+
+// Vissa flöden (t.ex. GTFS Sverige 2) saknar direction_id. Då jämförs varje
+// variants färdriktning (första till sista hållplatsen) med linjens vanligaste variant.
+function inferDirections() {
+  for (const { variants } of routes.values()) {
+    const vs = [...variants.values()].filter((v) => v.dir == null).sort((a, b) => b.trips - a.trips);
+    if (!vs.length) continue;
+    const vec = (v) => {
+      const a = stopById.get(v.stops[0]), b = stopById.get(v.stops[v.stops.length - 1]);
+      return [b.lon - a.lon, b.lat - a.lat];
+    };
+    const ref = vec(vs[0]);
+    for (const v of vs) {
+      const d = vec(v);
+      v.dir = d[0] * ref[0] + d[1] * ref[1] < 0 ? 1 : 0;
+    }
+  }
 }
 
 function fillTimes(list) {

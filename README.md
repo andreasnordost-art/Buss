@@ -17,6 +17,9 @@ Trafiklab GTFS-RT ------var 15 s---> Cloudflare Worker (döljer nyckeln, cachar)
   visas streckade när man väljer linjen.
 - `worker/` hämtar fordonspositioner, förseningar och störningar och gör om dem till liten JSON.
 - `public/` är själva sidan: MapLibre-karta med OpenFreeMap, utan byggsteg.
+- `public/schematic.js` ritar linjenätskartan i tunnelbanestil automatiskt ur samma data:
+  knutpunkter placeras ungefär geografiskt (centrum förstoras), och sträckorna mellan dem
+  ritas i 0°, 45° och 90° med linjer som delar väg lagda bredvid varandra.
 - `config.mjs` styr vilket område som räknas som kommunen och centralorten (Tätort/Landsbygd).
 
 ## Komma igång

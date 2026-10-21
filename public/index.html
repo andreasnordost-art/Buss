@@ -25,7 +25,12 @@
 
     <section class="mapwrap" aria-label="Karta">
       <div id="map"></div>
+      <div id="schematic" class="schemwrap" hidden></div>
       <div class="mapbar">
+        <div class="seg" role="radiogroup" aria-label="Karttyp">
+          <button type="button" role="radio" data-view="map" aria-checked="true">Karta</button>
+          <button type="button" role="radio" data-view="schem" aria-checked="false">Linjenät</button>
+        </div>
         <div class="seg" role="radiogroup" aria-label="Visa linjer">
           <button type="button" role="radio" data-kind="all" aria-checked="true">Alla</button>
           <button type="button" role="radio" data-kind="tatort" aria-checked="false">Tätort</button>

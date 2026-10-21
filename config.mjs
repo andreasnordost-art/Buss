@@ -7,7 +7,7 @@ export const OPERATOR = "dintur";
 export const MUNICIPALITY_BBOX = [17.9, 62.95, 19.5, 63.78];
 
 // Centralorten. En linje vars hållplatser alla ligger här räknas som Tätort.
-export const TOWN_BBOX = [18.6, 63.24, 18.82, 63.34];
+export const TOWN_BBOX = [18.57, 63.235, 18.85, 63.36];
 
 // Andel av en turs hållplatser som måste ligga i kommunen för att turen ska tas med.
 export const MIN_SHARE_IN_MUNICIPALITY = 0.5;
