@@ -3,9 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Busskollen Övik</title>
-  <meta name="description" content="Bussarna i Örnsköldsvik live på kartan, avgångar och reseförslag. Data från Din Tur via Trafiklab.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b6e8a'/%3E%3Crect x='8' y='7' width='16' height='16' rx='3' fill='white'/%3E%3Crect x='10' y='10' width='12' height='6' fill='%230b6e8a'/%3E%3Ccircle cx='11.5' cy='25' r='2' fill='white'/%3E%3Ccircle cx='20.5' cy='25' r='2' fill='white'/%3E%3C/svg%3E">
+  <title>Busskollen Övik · Bussar och avgångar i realtid</title>
+  <meta name="description" content="Följ bussarna i Örnsköldsvik, se aktuella avgångar och planera din resa, från tätort till landsbygd.">
+  <meta name="theme-color" content="#1d5c45">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
@@ -16,11 +19,16 @@
   <a class="skip" href="#panel">Hoppa till avgångar och reseplanering</a>
   <div class="app">
     <header class="top">
-      <div class="brand">
-        <span class="logo" aria-hidden="true"></span>
-        <h1>Busskollen Övik</h1>
-      </div>
+      <a class="brand" href="./" aria-label="Busskollen Övik, startsida">
+        <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="15" rx="3"/><path d="M5 11h14M8 21v-3M16 21v-3"/><circle cx="8.5" cy="14.5" r=".9"/><circle cx="15.5" cy="14.5" r=".9"/></svg></span>
+        <span class="name"><b>Busskollen</b><small>Övik</small></span>
+      </a>
       <span id="status" class="status" role="status">Ansluter…</span>
+      <div class="seg kinds" role="radiogroup" aria-label="Område">
+        <button type="button" role="radio" data-kind="tatort" aria-checked="true">Tätort</button>
+        <button type="button" role="radio" data-kind="landsbygd" aria-checked="false">Landsbygd</button>
+        <button type="button" role="radio" data-kind="all" aria-checked="false">Alla</button>
+      </div>
     </header>
 
     <section class="mapwrap" aria-label="Karta">
@@ -31,60 +39,101 @@
           <button type="button" role="radio" data-view="map" aria-checked="true">Karta</button>
           <button type="button" role="radio" data-view="schem" aria-checked="false">Linjenät</button>
         </div>
-        <div class="seg" role="radiogroup" aria-label="Visa linjer">
-          <button type="button" role="radio" data-kind="all" aria-checked="true">Alla</button>
-          <button type="button" role="radio" data-kind="tatort" aria-checked="false">Tätort</button>
-          <button type="button" role="radio" data-kind="landsbygd" aria-checked="false">Landsbygd</button>
+        <span class="spacer"></span>
+        <button type="button" id="follow" class="toggle" aria-pressed="false" hidden>Följ bussen</button>
+        <div class="layers">
+          <button type="button" id="layers-btn" class="toggle" aria-expanded="false" aria-controls="layers">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></svg><span class="lbl">Lager</span>
+          </button>
+          <div id="layers" class="popover" hidden>
+            <fieldset>
+              <legend>Linjer på kartan</legend>
+              <label><input type="radio" name="lines" value="main" checked> Huvudlinjer <small>regelbunden trafik</small></label>
+              <label><input type="radio" name="lines" value="all"> Alla linjer <small>även skol- och specialturer</small></label>
+              <label><input type="checkbox" id="alt-toggle"> Avvikande körvägar <small>turer som går en annan väg</small></label>
+            </fieldset>
+            <fieldset>
+              <legend>Kartstil</legend>
+              <div class="styles">
+                <label><input type="radio" name="style" value="light" checked><span class="sw light"></span>Ljus</label>
+                <label><input type="radio" name="style" value="detail"><span class="sw detail"></span>Detaljerad</label>
+                <label><input type="radio" name="style" value="dark"><span class="sw dark"></span>Mörk</label>
+              </div>
+            </fieldset>
+          </div>
         </div>
-        <button type="button" id="extra" class="toggle" aria-pressed="false">Övriga turer</button>
-        <button type="button" id="locate" class="iconbtn" aria-label="Visa var jag är">
+        <button type="button" id="locate" class="iconbtn" aria-label="Visa hållplatser nära mig">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
         </button>
       </div>
-      <div id="lineinfo" class="lineinfo" hidden></div>
     </section>
 
-    <aside id="panel" class="panel">
-      <div id="alerts" class="alerts" hidden></div>
-
+    <aside id="panel" class="panel" data-sheet="peek">
+      <button type="button" class="handle" aria-label="Visa mer av panelen"><span></span></button>
+      <div class="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+        <input id="q" type="search" placeholder="Sök hållplats eller linje" autocomplete="off" aria-label="Sök hållplats eller linje" aria-controls="q-results" aria-expanded="false" role="combobox">
+        <ul id="q-results" class="results" role="listbox" hidden></ul>
+      </div>
       <nav class="tabs" role="tablist">
         <button type="button" role="tab" id="tab-dep" aria-controls="view-dep" aria-selected="true">Avgångar</button>
-        <button type="button" role="tab" id="tab-trip" aria-controls="view-trip" aria-selected="false">Sök resa</button>
-        <button type="button" role="tab" id="tab-lines" aria-controls="view-lines" aria-selected="false">Linjer</button>
+        <button type="button" role="tab" id="tab-info" aria-controls="view-info" aria-selected="false">Trafikinfo <span id="info-count" class="count" hidden></span></button>
       </nav>
 
       <section id="view-dep" role="tabpanel" aria-labelledby="tab-dep" class="view">
-        <label class="field">
-          <span>Hållplats</span>
-          <input id="stop-input" type="search" placeholder="T.ex. Resecentrum" autocomplete="off" list="stop-names">
-        </label>
-        <div id="nearby" class="chips"></div>
-        <h2 id="dep-title" class="h2" hidden></h2>
-        <ol id="departures" class="deps"></ol>
-        <p id="dep-empty" class="muted">Välj en hållplats i listan, på kartan eller med knappen för din position.</p>
+        <div id="home">
+          <div class="hero">
+            <h2>När går nästa buss?</h2>
+            <p class="muted">Välj en hållplats eller buss på kartan, eller sök ovan.</p>
+          </div>
+          <button type="button" id="alert-card" class="card warn" hidden></button>
+          <div id="favs"></div>
+          <div id="mytrips"></div>
+          <details id="planner" class="card fold">
+            <summary><span class="ico">⇄</span>Planera din resa</summary>
+            <form id="trip-form" class="tripform">
+              <label class="field"><span>Från</span><input id="trip-from" type="search" list="stop-names" autocomplete="off" placeholder="Sök hållplats" required></label>
+              <button type="button" id="swap" class="linkbtn">⇅ Byt riktning</button>
+              <label class="field"><span>Till</span><input id="trip-to" type="search" list="stop-names" autocomplete="off" placeholder="Sök hållplats" required></label>
+              <label class="field"><span>Avgång</span><input id="trip-time" type="datetime-local"></label>
+              <p class="small muted">Lämna tomt för nästa resa.</p>
+              <div class="row">
+                <button type="submit" class="primary">Sök resa</button>
+                <button type="button" id="save-trip" class="secondary">Spara som Min resa</button>
+              </div>
+            </form>
+            <p id="trip-status" class="small muted" role="status"></p>
+            <ol id="trip-results" class="trips"></ol>
+            <details class="about">
+              <summary>Om reseförslagen</summary>
+              <p class="small">Direkt eller med ett byte på samma hållplatsområde, minst fem minuters bytestid. Ankomsten är ungefärlig. Kontrollera inställda turer och trafikläget hos Din Tur.</p>
+            </details>
+            <a class="small" href="https://www.dintur.se/sok-resa/" target="_blank" rel="noopener">Sök hos Din Tur ↗</a>
+          </details>
+          <button type="button" id="nearby-btn" class="card"><span class="ico">◎</span><span class="grow">Hållplatser nära mig</span><span class="chev">›</span></button>
+          <ul id="nearby" class="list" hidden></ul>
+          <a class="card" href="https://mypages.vn.prod.mcs.fara.no/mypages/tickets" target="_blank" rel="noopener"><span class="ico">🎫</span><span class="grow">Köp biljett hos Din Tur</span><span class="chev">↗</span></a>
+          <h3 class="label">Vanliga hållplatser</h3>
+          <ul id="common" class="list"></ul>
+        </div>
+
+        <div id="stop" hidden></div>
+        <div id="bus" hidden></div>
+        <div id="line" hidden></div>
       </section>
 
-      <section id="view-trip" role="tabpanel" aria-labelledby="tab-trip" class="view" hidden>
-        <form id="trip-form" class="tripform">
-          <label class="field"><span>Från</span><input id="trip-from" type="search" list="stop-names" autocomplete="off" required></label>
-          <button type="button" id="swap" class="linkbtn">⇅ Byt riktning</button>
-          <label class="field"><span>Till</span><input id="trip-to" type="search" list="stop-names" autocomplete="off" required></label>
-          <label class="field"><span>Avgång tidigast</span><input id="trip-time" type="time" required></label>
-          <button type="submit" class="primary">Sök resa</button>
-        </form>
-        <ol id="trip-results" class="trips"></ol>
-        <p class="muted small">Visar direktresor och resor med ett byte (minst 5 minuter). Hitta fler alternativ hos <a href="https://www.dintur.se/sok-resa/" target="_blank" rel="noopener">Din Tur ↗</a>.</p>
+      <section id="view-info" role="tabpanel" aria-labelledby="tab-info" class="view" hidden>
+        <p id="info-scope" class="small muted"></p>
+        <div id="alerts"></div>
       </section>
 
-      <section id="view-lines" role="tabpanel" aria-labelledby="tab-lines" class="view" hidden>
-        <p class="muted small">Tryck på en linje för att se den på kartan.</p>
-        <ul id="lines" class="lines"></ul>
-      </section>
-
-      <footer class="foot">
-        <a href="https://mypages.vn.prod.mcs.fara.no/mypages/tickets" target="_blank" rel="noopener">Köp biljett hos Din Tur ↗</a>
-        <p>Busskollen Övik är en fristående tjänst och inte Din Turs officiella app. Data från Din Tur via <a href="https://www.trafiklab.se/api/gtfs-datasets/gtfs-regional/" target="_blank" rel="noopener">Trafiklab</a> (CC0). Karta © <a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a>, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>.</p>
-      </footer>
+      <details class="foot">
+        <summary>Om Busskollen Övik</summary>
+        <p>Bussarnas lägen uppdateras ungefär var 15:e sekund. Grå bussar har en äldre position. Avgångar utan prognos märks Tidtabell.</p>
+        <p>Busskollen Övik är en fristående tjänst och inte Din Turs officiella app. Trafikdata kommer från Din Tur via Trafiklab (CC0).</p>
+        <p>Lägen och prognoser kan vara fördröjda eller saknas. Kontrollera viktig reseinformation hos <a href="https://www.dintur.se/" target="_blank" rel="noopener">Din Tur</a>.</p>
+        <p>Karta © <a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a>, © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a>, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>. Karttjänsten tar emot din IP-adress när kartan laddas.</p>
+      </details>
     </aside>
   </div>
   <datalist id="stop-names"></datalist>
