@@ -75,6 +75,8 @@ h1 { font-size: 1.15rem; margin: 0; letter-spacing: 0.01em; }
 .seg { display: inline-flex; background: var(--surface); border-radius: 10px; box-shadow: var(--shadow); padding: 3px; }
 .seg button { border: 0; background: none; padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; }
 .seg button[aria-checked="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 700; }
+.toggle { border: 0; border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); padding: 6px 12px; cursor: pointer; font-size: 0.9rem; }
+.toggle[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 700; }
 .iconbtn { width: 40px; height: 40px; border: 0; border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); cursor: pointer; display: grid; place-items: center; }
 .iconbtn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; }
 
@@ -143,6 +145,7 @@ h1 { font-size: 1.15rem; margin: 0; letter-spacing: 0.01em; }
 .schematic.dragging { cursor: grabbing; }
 .schematic .route { fill: none; stroke-linecap: round; stroke-linejoin: round; cursor: pointer; transition: opacity 0.15s; }
 .schematic.has-sel .route:not(.sel) { opacity: 0.15; }
+.schematic .route.extra { opacity: 0.85; }
 .schematic .station { fill: var(--surface); stroke: var(--fg); cursor: pointer; }
 .schematic .station:focus-visible { outline: none; stroke: var(--accent); stroke-width: 3; }
 .schematic .lbl { font-family: var(--font); fill: var(--fg); pointer-events: none; paint-order: stroke; stroke: var(--canvas); stroke-linejoin: round; }

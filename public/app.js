@@ -18,6 +18,7 @@ const $ = (s) => document.querySelector(s);
 const state = {
   kind: "all",
   view: "map", // "map" eller "schem" (linjenätskarta)
+  extra: false, // visa övriga turer (skol- och specialturer)
   schem: null,
   route: null, // vald linje (index)
   group: null, // vald hållplatsgrupp
@@ -109,6 +110,7 @@ function buildUi() {
   for (const b of document.querySelectorAll("[data-view]")) {
     b.addEventListener("click", () => setView(b.dataset.view));
   }
+  $("#extra").addEventListener("click", () => setExtra(!state.extra));
   for (const tab of document.querySelectorAll('[role="tab"]')) {
     tab.addEventListener("click", () => showTab(tab.id));
   }
@@ -152,6 +154,8 @@ function setKind(kind) {
   for (const v of state.vehicles.values()) styleMarker(v);
 }
 const kindMatches = (r) => state.kind === "all" || r.kind === state.kind;
+// Linjer som visas just nu: rätt område, och övriga turer bara när de är påslagna.
+const routeShown = (r) => kindMatches(r) && (state.extra || r.tier !== "extra");
 
 // Växla mellan den geografiska kartan och linjenätskartan.
 function setView(view) {
@@ -164,13 +168,23 @@ function setView(view) {
 }
 
 function drawSchematic() {
-  const idx = net.routes.map((r, i) => i).filter((i) => kindMatches(net.routes[i]));
+  const idx = net.routes.map((r, i) => i).filter((i) => routeShown(net.routes[i]));
   const layout = layoutSchematic(net, groups, stopGroup, idx, state.kind === "all" ? { power: 0.35 } : {});
   state.schem = renderSchematic($("#schematic"), net, groups, layout, {
     onStop: (g) => selectGroup(g),
     onRoute: (ri) => selectRoute(ri),
     selectedRoute: state.route,
+    extra: new Set(idx.filter((i) => net.routes[i].tier === "extra")),
   });
+}
+
+function setExtra(on) {
+  state.extra = on;
+  $("#extra").setAttribute("aria-pressed", on);
+  if (!on && state.route != null && net.routes[state.route].tier === "extra") selectRoute(null);
+  applyMapFilters();
+  renderLineList();
+  if (state.view === "schem") drawSchematic();
 }
 
 function setStatus(text, cls = "") {
@@ -191,9 +205,8 @@ function badge(ri) {
 function renderLineList() {
   const ul = $("#lines");
   ul.replaceChildren();
-  for (const [kind, title] of [["tatort", "Tätort"], ["landsbygd", "Landsbygd"]]) {
-    if (state.kind !== "all" && state.kind !== kind) continue;
-    const list = net.routes.map((r, i) => [r, i]).filter(([r]) => r.kind === kind);
+  for (const [tier, title] of [["stom", "Stomlinjer"], ["linje", "Landsbygd"], ["extra", "Övriga turer"]]) {
+    const list = net.routes.map((r, i) => [r, i]).filter(([r]) => r.tier === tier && routeShown(r));
     if (!list.length) continue;
     ul.append(Object.assign(document.createElement("li"), { className: "group", textContent: title }));
     for (const [r, i] of list) {
@@ -227,6 +240,10 @@ function initMap() {
   map.on("load", () => {
     map.addSource("routes", { type: "geojson", data: routeGeoJSON() });
     map.addSource("stops", { type: "geojson", data: stopGeoJSON() });
+    // Övriga turer: tunna och streckade, under de vanliga linjerna.
+    map.addLayer({ id: "route-extra", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
+      layout: { "line-cap": "butt", "line-join": "round" },
+      paint: { "line-color": ["get", "c"], "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 15, 2.5], "line-dasharray": [2, 1.5] } });
     map.addLayer({ id: "route-casing", type: "line", source: "routes", filter: ["get", "main"],
       layout: { "line-cap": "round", "line-join": "round" },
       paint: { "line-color": dark ? "#0f171b" : "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 15, 8] } });
@@ -271,7 +288,7 @@ function routeGeoJSON() {
   const features = [];
   net.routes.forEach((r, ri) =>
     r.variants.forEach((v) =>
-      features.push({ type: "Feature", properties: { r: ri, c: r.c, kind: r.kind, main: v.main }, geometry: { type: "LineString", coordinates: v.path } }),
+      features.push({ type: "Feature", properties: { r: ri, c: r.c, kind: r.kind, main: v.main, extra: r.tier === "extra" }, geometry: { type: "LineString", coordinates: v.path } }),
     ),
   );
   // Huvudlinjer sist så att de ritas överst i samma lager.
@@ -289,9 +306,11 @@ function stopGeoJSON() {
 function applyMapFilters() {
   if (!map?.getLayer("route-line")) return;
   const kindFilter = state.kind === "all" ? true : ["==", ["get", "kind"], state.kind];
-  const base = ["all", ["get", "main"], kindFilter];
+  const base = ["all", ["get", "main"], kindFilter, ["!", ["get", "extra"]]];
   map.setFilter("route-casing", base);
   map.setFilter("route-line", base);
+  map.setFilter("route-extra", state.extra ? ["all", ["get", "main"], kindFilter, ["get", "extra"]] : ["==", ["get", "r"], -1]);
+  map.setPaintProperty("route-extra", "line-opacity", state.route == null ? 0.9 : 0.25);
   map.setFilter("stops", state.kind === "all" ? null : ["in", state.kind, ["get", "kinds"]]);
   const sel = state.route ?? -1;
   map.setPaintProperty("route-line", "line-opacity", state.route == null ? 0.9 : 0.25);

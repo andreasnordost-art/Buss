@@ -154,11 +154,11 @@ const network = {
   stops: stopList.map((s) => [s.id, s.name, round(s.lat), round(s.lon)]),
   routes: networkRoutes,
 };
-writeFileSync(`${outDir}/network.json`, JSON.stringify(network));
 
 // Turer per dag.
 const services = serviceCalendar();
 const dates = upcomingDates(cfg.DAYS_AHEAD);
+const dailyMax = networkRoutes.map(() => 0);
 for (const date of dates) {
   const trips = [];
   for (const [tripId, v] of tripVariant) {
@@ -169,10 +169,23 @@ for (const date of dates) {
     trips.push([tripId, ri, vi, trip.trip_headsign || v.headsign, stops.map((s) => stopIndex.get(s.stop)), stops.map((s) => s.time)]);
   }
   trips.sort((a, b) => a[5][0] - b[5][0]);
+  const perRoute = new Map();
+  for (const t of trips) perRoute.set(t[1], (perRoute.get(t[1]) || 0) + 1);
+  for (const [ri, n] of perRoute) dailyMax[ri] = Math.max(dailyMax[ri], n);
   writeFileSync(`${outDir}/days/${date}.json`, JSON.stringify({ date, trips }));
   console.log(`${date}: ${trips.length} turer`);
 }
 writeFileSync(`${outDir}/days/index.json`, JSON.stringify(dates));
+
+// Hur ofta linjen går avgör hur framträdande den ritas: stomlinjer, landsbygdslinjer
+// och övriga turer (skol- och specialturer). Saknar de byggda dagarna trafik räknas
+// alla turer i filen i stället.
+const anyService = dailyMax.some((n) => n > 0);
+networkRoutes.forEach((r, i) => {
+  r.daily = anyService ? dailyMax[i] : r.variants.reduce((sum, v) => sum + v.trips, 0);
+  r.tier = r.daily >= cfg.TIER_TRIPS.stom && r.kind === "tatort" ? "stom" : r.daily >= cfg.TIER_TRIPS.linje ? "linje" : "extra";
+});
+writeFileSync(`${outDir}/network.json`, JSON.stringify(network));
 console.log(`${networkRoutes.length} linjer, ${stopList.length} hållplatser`);
 
 // ---------------------------------------------------------------------------

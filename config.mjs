@@ -23,3 +23,7 @@ export const SIMPLIFY_METERS = 4;
 export const DAYS_AHEAD = 8;
 
 export const TIMEZONE = "Europe/Stockholm";
+
+// Turer per dag som krävs för att en linje ska ritas som stomlinje (bara Tätort)
+// respektive vanlig linje. Linjer med färre turer räknas som övriga turer.
+export const TIER_TRIPS = { stom: 20, linje: 10 };
