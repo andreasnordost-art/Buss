@@ -308,6 +308,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   const labelsG = el("g", { class: "labels" });
   view.append(linesG, stopsG, labelsG);
 
+  const labels = [];
   const step = LW + GAP;
   const bundle = new Map(); // nod -> största antal linjer bredvid varandra
   for (const c of layout.chains) {
@@ -367,32 +368,36 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     const title = el("title", {});
     title.textContent = groups[g].name;
     node.append(title);
-    node.addEventListener("click", () => onStop?.(g));
-    node.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && onStop?.(g));
+    const pick = () => {
+      mark(g);
+      onStop?.(g);
+    };
+    node.addEventListener("click", pick);
+    node.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && pick());
   }
 
   function label(g, p, dir, major, pad) {
     // Text vinkelrätt ut från linjen; längs vågräta linjer snett uppåt så att namnen inte krockar.
-    const t = el("text", { class: major ? "lbl major" : "lbl" });
-    t.textContent = shortName(groups[g].name);
-    const horizontal = Math.abs(dir[1]) < 0.01;
-    if (horizontal && !major) {
-      t.setAttribute("transform", `translate(${p[0] + 3} ${p[1] - pad - 3}) rotate(-45)`);
-    } else {
-      let nx = -dir[1], ny = dir[0];
-      if (nx < 0 || (nx === 0 && ny > 0)) [nx, ny] = [-nx, -ny];
-      const gap = pad + 4;
-      t.setAttribute("x", (p[0] + nx * gap).toFixed(1));
-      t.setAttribute("y", (p[1] + ny * gap + 4).toFixed(1));
-    }
-    labelsG.append(t);
+    let nx = -dir[1], ny = dir[0];
+    if (nx < 0 || (nx === 0 && ny > 0)) [nx, ny] = [-nx, -ny];
+    labels.push({ text: shortName(groups[g].name), p, nx, ny, pad, major, rotate: Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size });
   }
 
-  declutter(labelsG);
+  const marker = el("circle", { r: 13, class: "picked", visibility: "hidden" });
+  stopsG.append(marker);
+  function mark(g) {
+    const p = layout.pos.get(g);
+    if (!p) return;
+    marker.setAttribute("cx", p[0]);
+    marker.setAttribute("cy", p[1]);
+    marker.setAttribute("visibility", "visible");
+  }
 
-  // Panorering och zoom.
+  // Panorering och zoom. Namnen behåller sin storlek på skärmen när man zoomar,
+  // så fler namn får plats ju längre in man zoomar.
   const content = view.getBBox();
-  const pz = panZoom(svg, view, content);
+  const names = labelLayer(labelsG, labels);
+  const pz = panZoom(svg, view, content, names.update);
   const api = {
     select(ri) {
       svg.classList.toggle("has-sel", ri != null);
@@ -404,27 +409,59 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     zoom: pz.zoom,
     focus(g) {
       const p = layout.pos.get(g);
-      if (p) pz.center(p, 2.2);
+      if (!p) return;
+      mark(g);
+      pz.center(p, 2.5);
     },
   };
   api.select(selectedRoute);
   return api;
 }
 
-// Döljer namn som krockar med ett viktigare namn. Knutpunkternas namn läggs först.
-export function declutter(labelsG) {
-  const boxes = [];
-  const hits = (b) => boxes.some((o) => b.left < o.right && b.right > o.left && b.top < o.bottom && b.bottom > o.top);
-  const all = [...labelsG.children].sort((a, b) => b.classList.contains("major") - a.classList.contains("major"));
-  for (const t of all) {
-    const r = t.getBoundingClientRect();
-    const b = { left: r.left - 1, right: r.right + 1, top: r.top - 1, bottom: r.bottom + 1 };
-    if (hits(b)) {
-      t.classList.add("hidden");
-      continue;
-    }
-    boxes.push(b);
+// Hållplatsnamn i konstant skärmstorlek. items: { text, p, nx, ny, pad, major, rotate, prio }.
+// pad är i kartans enheter (hållplatsens radie), övriga avstånd i skärmpixlar.
+export function labelLayer(group, items) {
+  const nodes = items.map((it) => {
+    const t = el("text", { class: it.major ? "lbl major" : "lbl" });
+    t.textContent = it.text;
+    group.append(t);
+    return t;
+  });
+  let timer;
+  function place(k) {
+    items.forEach((it, i) => {
+      const t = nodes[i];
+      t.style.fontSize = `${(it.major ? 13 : 11.5) / k}px`;
+      t.style.strokeWidth = `${3.5 / k}px`;
+      const [x, y] = it.p;
+      if (it.rotate) {
+        t.setAttribute("transform", `translate(${x + 3 / k} ${y - it.pad - 3 / k}) rotate(-45)`);
+      } else {
+        const gap = it.pad + 5 / k;
+        t.setAttribute("x", x + it.nx * gap);
+        t.setAttribute("y", y + it.ny * gap + 4 / k);
+        t.setAttribute("text-anchor", it.nx > 0.3 ? "start" : it.nx < -0.3 ? "end" : "middle");
+      }
+    });
   }
+  function declutter() {
+    for (const t of nodes) t.classList.remove("hidden");
+    const order = items.map((it, i) => i).sort((a, b) => items[b].major - items[a].major || items[b].prio - items[a].prio);
+    const boxes = [];
+    for (const i of order) {
+      const r = nodes[i].getBoundingClientRect();
+      const b = { left: r.left - 2, right: r.right + 2, top: r.top - 1, bottom: r.bottom + 1 };
+      if (boxes.some((o) => b.left < o.right && b.right > o.left && b.top < o.bottom && b.bottom > o.top)) nodes[i].classList.add("hidden");
+      else boxes.push(b);
+    }
+  }
+  return {
+    update(k) {
+      place(k);
+      clearTimeout(timer);
+      timer = setTimeout(declutter, 60);
+    },
+  };
 }
 
 function segDir(line, p) {
@@ -451,22 +488,25 @@ function el(tag, attrs) {
   return n;
 }
 
-export function panZoom(svg, view, box) {
-  let k = 1, tx = 0, ty = 0;
+export function panZoom(svg, view, box, onZoom) {
+  let k = 1, tx = 0, ty = 0, lastK = null, fitK = 1;
   const apply = () => {
     view.setAttribute("transform", `translate(${tx} ${ty}) scale(${k})`);
-    svg.classList.toggle("detail", k > 1.15);
+    if (k !== lastK) {
+      lastK = k;
+      onZoom?.(k);
+    }
   };
   const fit = () => {
     const w = svg.clientWidth || 800, h = svg.clientHeight || 600;
     const m = 40;
-    k = Math.min((w - 2 * m) / box.width, (h - 2 * m) / box.height);
+    k = fitK = Math.min((w - 2 * m) / box.width, (h - 2 * m) / box.height);
     tx = (w - box.width * k) / 2 - box.x * k;
     ty = (h - box.height * k) / 2 - box.y * k;
     apply();
   };
   const zoomAt = (f, cx, cy) => {
-    const nk = Math.max(0.2, Math.min(8, k * f));
+    const nk = Math.max(0.1, Math.min(10, k * f));
     tx = cx - ((cx - tx) * nk) / k;
     ty = cy - ((cy - ty) * nk) / k;
     k = nk;
@@ -508,14 +548,23 @@ export function panZoom(svg, view, box) {
   };
   svg.addEventListener("pointerup", up);
   svg.addEventListener("pointercancel", up);
-  new ResizeObserver(fit).observe(svg);
+  // Passa in kartan igen bara när ytan faktiskt ändrar storlek.
+  let size = `${svg.clientWidth}x${svg.clientHeight}`;
+  new ResizeObserver(() => {
+    const now = `${svg.clientWidth}x${svg.clientHeight}`;
+    if (now !== size) {
+      size = now;
+      fit();
+    }
+  }).observe(svg);
   fit();
   return {
     fit,
     zoom: (f) => zoomAt(f, svg.clientWidth / 2, svg.clientHeight / 2),
+    // Centrera på p, minst `zoom` gånger inzoomat jämfört med hela kartan.
     center(p, zoom) {
       const w = svg.clientWidth, h = svg.clientHeight;
-      k = Math.max(k, zoom);
+      k = Math.max(k, fitK * zoom);
       tx = w / 2 - p[0] * k;
       ty = h / 2 - p[1] * k;
       apply();

@@ -145,10 +145,10 @@ h1 { font-size: 1.15rem; margin: 0; letter-spacing: 0.01em; }
 .schematic.has-sel .route:not(.sel) { opacity: 0.15; }
 .schematic .station { fill: var(--surface); stroke: var(--fg); stroke-width: 1.5; cursor: pointer; }
 .schematic .station:focus-visible { outline: none; stroke: var(--accent); stroke-width: 3; }
-.schematic .lbl { font: 9px var(--font); fill: var(--fg); opacity: 0; pointer-events: none; paint-order: stroke; stroke: var(--canvas); stroke-width: 3px; }
-.schematic.detail .lbl { opacity: 1; }
-.schematic .lbl.major { font-size: 11px; font-weight: 700; opacity: 1; }
+.schematic .lbl { font-family: var(--font); fill: var(--fg); pointer-events: none; paint-order: stroke; stroke: var(--canvas); stroke-linejoin: round; }
+.schematic .lbl.major { font-weight: 700; }
 .schematic .lbl.hidden { display: none; }
+.schematic .picked { fill: none; stroke: var(--accent); stroke-width: 3; pointer-events: none; }
 
 /* Bussmarkörer */
 .bus { width: 30px; height: 30px; position: relative; cursor: pointer; }
