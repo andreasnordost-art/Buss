@@ -1,0 +1,7 @@
+stop_id,stop_name,stop_lat,stop_lon,parent_station
+A,Örnsköldsvik Resecentrum,63.2906,18.7153,
+B,"Torget, Övik",63.2905,18.7210,
+C,Sjukhuset,63.2960,18.7370,
+D,Gullänget,63.2780,18.7550,
+E,Bjästa,63.2010,18.4860,
+F,Umeå C,63.8270,20.2600,

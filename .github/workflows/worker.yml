@@ -1,0 +1,29 @@
+# Publicerar realtidsproxyn på Cloudflare när koden i worker/ ändras.
+name: Realtidsproxy
+
+on:
+  push:
+    branches: [main]
+    paths: ["worker/**"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TRAFIKLAB_RT_KEY: ${{ secrets.TRAFIKLAB_RT_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+      # Trafiklab-nyckeln behövs bara för /vehicles, /updates och /alerts direkt från
+      # Trafiklab. /api/* fungerar utan den.
+      - name: Trafiklab-nyckel (valfri)
+        if: env.TRAFIKLAB_RT_KEY != ''
+        working-directory: worker
+        run: printf '%s' "$TRAFIKLAB_RT_KEY" | npx --yes wrangler@3 secret put TRAFIKLAB_RT_KEY
