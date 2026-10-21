@@ -172,6 +172,14 @@ function buildUi() {
   $("#alert-card").addEventListener("click", () => showTab("tab-info"));
   $("#follow").addEventListener("click", () => setFollow(!state.follow));
 
+  for (const b of document.querySelectorAll("[data-zoom]")) {
+    b.addEventListener("click", () => {
+      if (!state.schem) return;
+      if (b.dataset.zoom === "fit") state.schem.fit();
+      else state.schem.zoom(b.dataset.zoom === "in" ? 1.5 : 1 / 1.5);
+    });
+  }
+  renderLegend();
   initSearch();
   initPlanner();
   initSheet();
@@ -229,6 +237,7 @@ function setKind(kind) {
   markKind();
   if (state.route != null && !kindMatches(net.routes[state.route])) selectRoute(null);
   applyMapFilters();
+  renderLegend();
   if (state.view === "schem") drawSchematic();
   for (const v of state.vehicles.values()) styleMarker(v);
   if (map) fitKind();
@@ -248,6 +257,7 @@ function setExtra(on) {
   store.set("extra", on);
   if (!on && state.route != null && net.routes[state.route].tier === "extra") selectRoute(null);
   applyMapFilters();
+  renderLegend();
   if (state.view === "schem") drawSchematic();
 }
 
@@ -355,16 +365,21 @@ function initMap() {
     // Saknas en stil faller vi tillbaka på den ljusa.
     if (String(e?.error?.message || "").includes("styles/") && state.style !== "light") setStyle("light");
   });
-  for (const l of ["stops", "route-line", "route-extra"]) {
+  const STOP_LAYERS = ["stops", "stop-hubs", "route-stops", "stop-names", "hub-names", "route-stop-names"];
+  for (const l of [...STOP_LAYERS, "route-line", "route-extra", "route-badges"]) {
     map.on("mouseenter", l, () => (map.getCanvas().style.cursor = "pointer"));
     map.on("mouseleave", l, () => (map.getCanvas().style.cursor = ""));
   }
-  map.on("click", "stops", (e) => selectGroup(e.features[0].properties.g));
+  // Hållplatser går att träffa även lite vid sidan om, så att de är lätta att trycka på.
   map.on("click", (e) => {
-    if (map.queryRenderedFeatures(e.point, { layers: ["stops"] }).length) return;
-    const hit = map.queryRenderedFeatures([[e.point.x - 6, e.point.y - 6], [e.point.x + 6, e.point.y + 6]], { layers: ["route-line", "route-extra"] });
+    const near = (d, layers) => map.queryRenderedFeatures([[e.point.x - d, e.point.y - d], [e.point.x + d, e.point.y + d]], { layers: layers.filter((l) => map.getLayer(l)) });
+    const stop = near(mobile() ? 12 : 8, STOP_LAYERS)[0];
+    if (stop) return selectGroup(stop.properties.g);
+    const hit = near(mobile() ? 10 : 6, ["route-badges", "route-selected", "route-line", "route-extra"]);
     if (hit.length) openLine(hit[0].properties.r);
   });
+  // Den hopfällda källhänvisningen tar mindre plats på mobilen.
+  map.once("load", () => map.getContainer().querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show"));
 }
 
 // På mobil täcker arket kartans nederdel: flytta målet upp till den synliga delen.
@@ -378,8 +393,21 @@ function offset() {
 }
 
 function fitPadding() {
-  const bottom = mobile() ? sheetHeight() + 20 : 40;
-  return { top: 70, bottom, left: 30, right: 30 };
+  const p = viewPadding();
+  return { top: p.top + 16, bottom: p.bottom + 20, left: p.left + 30, right: p.right + 30 };
+}
+
+// Hur mycket av kartytan som täcks av knapparna, linjeraden och (på mobil) arket.
+function viewPadding() {
+  const wrap = $(".mapwrap").getBoundingClientRect();
+  let top = 0, bottom = mobile() ? sheetHeight() - (innerHeight - wrap.bottom) : 0;
+  for (const el of [$(".mapbar"), $("#legend")]) {
+    if (!el || el.hidden || !el.offsetHeight) continue;
+    const r = el.getBoundingClientRect();
+    if (r.top - wrap.top < wrap.height / 2) top = Math.max(top, r.bottom - wrap.top);
+    else bottom = Math.max(bottom, wrap.bottom - r.top);
+  }
+  return { top, bottom: Math.max(0, bottom), left: 0, right: 52 };
 }
 
 function setStyle(name) {
@@ -393,49 +421,100 @@ function addLayers() {
   if (map.getSource("routes")) return;
   const dark = state.style === "dark";
   const casing = dark ? "#10171a" : "#ffffff";
+  const ink = dark ? "#e8f0ec" : "#163f30";
+  addLineBadges();
   map.addSource("routes", { type: "geojson", data: routeGeoJSON() });
   map.addSource("stops", { type: "geojson", data: stopGeoJSON() });
   map.addSource("journey", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-  const width = (a, b) => ["interpolate", ["linear"], ["zoom"], 8, a * 0.9, 12, a * 1.15, 16, b];
+  // Linjerna läggs under kartans egna namn, så att ortnamn och gatunamn syns ovanpå.
+  const below = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+  const zoomed = (stops) => ["interpolate", ["linear"], ["zoom"], ...stops.flat()];
+  const width = (a, b) => zoomed([[8, a * 0.8], [12, a], [16, b]]);
+  const round = { "line-cap": "round", "line-join": "round" };
   // Övriga turer: tunna och streckade, under de vanliga linjerna.
   map.addLayer({ id: "route-alt", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
-    layout: { "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(1.5, 3), "line-dasharray": [1.5, 1.5], "line-opacity": 0.8 } });
+    layout: { "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(1.8, 3.5), "line-dasharray": [1.5, 1.5], "line-opacity": 0.8 } }, below);
   map.addLayer({ id: "route-extra", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
-    layout: { "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(1.2, 2.5), "line-dasharray": [2, 1.5] } });
+    layout: { "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(1.6, 3), "line-dasharray": [2, 1.5] } }, below);
   map.addLayer({ id: "route-casing", type: "line", source: "routes", filter: ["get", "main"],
-    layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": casing, "line-width": width(4, 9) } });
+    layout: round, paint: { "line-color": casing, "line-width": width(6, 12), "line-opacity": 0.95 } }, below);
   map.addLayer({ id: "route-line", type: "line", source: "routes", filter: ["get", "main"],
-    layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(2, 5) } });
+    layout: round, paint: { "line-color": ["get", "c"], "line-width": width(3.2, 6.5) } }, below);
+  map.addLayer({ id: "route-selected-casing", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
+    layout: round, paint: { "line-color": casing, "line-width": width(9, 15) } }, below);
   map.addLayer({ id: "route-selected", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
-    layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(4, 8) } });
+    layout: round, paint: { "line-color": ["get", "c"], "line-width": width(5, 9) } }, below);
   map.addLayer({ id: "journey-done", type: "line", source: "journey", filter: ["==", ["get", "part"], "done"],
-    layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(3, 6), "line-opacity": 0.3 } });
+    layout: round, paint: { "line-color": ["get", "c"], "line-width": width(3.5, 7), "line-opacity": 0.3 } }, below);
   map.addLayer({ id: "journey-left", type: "line", source: "journey", filter: ["==", ["get", "part"], "left"],
-    layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(4, 8) } });
+    layout: round, paint: { "line-color": ["get", "c"], "line-width": width(5, 9) } }, below);
+  // Linjenummer längs linjerna, som små skyltar i linjens färg.
+  map.addLayer({ id: "route-badges", type: "symbol", source: "routes", minzoom: 9.5, filter: ["==", ["get", "r"], -1],
+    layout: { "symbol-placement": "line", "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 11, 260, 16, 480], "icon-image": ["concat", "line-", ["get", "name"]], "icon-rotation-alignment": "viewport", "icon-padding": 6, "symbol-sort-key": ["get", "rank"] } });
   map.addLayer({ id: "journey-stops", type: "circle", source: "journey", filter: ["==", ["get", "part"], "stop"],
-    paint: { "circle-radius": 4.5, "circle-color": casing, "circle-stroke-color": ["get", "c"], "circle-stroke-width": 2.5 } });
-  map.addLayer({ id: "stops", type: "circle", source: "stops", minzoom: 12,
-    paint: {
-      "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 2.5, 16, 6.5],
-      "circle-color": casing,
-      "circle-stroke-color": dark ? "#9fb1aa" : "#1f3a31",
-      "circle-stroke-width": 1.5,
-    } });
+    paint: { "circle-radius": zoomed([[11, 3.5], [16, 6]]), "circle-color": casing, "circle-stroke-color": ["get", "c"], "circle-stroke-width": 2.5 } });
+  // Hållplatser: knutpunkter syns tidigt och större, övriga när man zoomat in.
+  const stopPaint = (r) => ({ "circle-radius": r, "circle-color": casing, "circle-stroke-color": ink, "circle-stroke-width": zoomed([[11, 1.4], [16, 2.2]]) });
+  map.addLayer({ id: "stop-hubs", type: "circle", source: "stops", minzoom: 11.5, maxzoom: 13.5, filter: ["get", "hub"], paint: stopPaint(zoomed([[10, 3], [13.5, 5.5]])) });
+  map.addLayer({ id: "stops", type: "circle", source: "stops", minzoom: 13.5, paint: stopPaint(zoomed([[13.5, ["case", ["get", "hub"], 5.5, 3.5]], [16, ["case", ["get", "hub"], 8, 6.5]], [18, 9]])) });
+  // Hållplatserna på vald linje, i linjens färg.
+  map.addLayer({ id: "route-stops", type: "circle", source: "stops", filter: ["==", ["get", "g"], -1],
+    paint: { "circle-radius": zoomed([[10, 3.5], [14, 5.5], [16, 8]]), "circle-color": casing, "circle-stroke-color": "#000", "circle-stroke-width": zoomed([[10, 2], [16, 3]]) } });
   map.addLayer({ id: "stop-selected", type: "circle", source: "stops", filter: ["==", ["get", "g"], -1],
-    paint: { "circle-radius": 9, "circle-color": "#1d5c45", "circle-stroke-color": "#fff", "circle-stroke-width": 3 } });
+    paint: { "circle-radius": zoomed([[10, 7], [16, 11]]), "circle-color": "#1d5c45", "circle-stroke-color": "#fff", "circle-stroke-width": 3.5 } });
+  const label = (font, size) => ({
+    "text-field": ["get", "name"], "text-font": [font], "text-size": size, "text-max-width": 9,
+    "text-variable-anchor": ["left", "right", "top", "bottom"], "text-radial-offset": 0.9, "text-justify": "auto",
+    "symbol-sort-key": ["-", 0, ["get", "n"]],
+  });
+  const labelPaint = { "text-color": ink, "text-halo-color": casing, "text-halo-width": 1.8, "text-halo-blur": 0.3 };
+  map.addLayer({ id: "stop-names", type: "symbol", source: "stops", minzoom: 14.5, filter: ["!", ["get", "hub"]], layout: label("Noto Sans Regular", zoomed([[14.5, 11.5], [17, 13.5]])), paint: labelPaint });
+  map.addLayer({ id: "hub-names", type: "symbol", source: "stops", minzoom: 11, filter: ["get", "hub"], layout: label("Noto Sans Bold", zoomed([[11, 11.5], [16, 14.5]])), paint: labelPaint });
+  map.addLayer({ id: "route-stop-names", type: "symbol", source: "stops", minzoom: 12, filter: ["==", ["get", "g"], -1], layout: label("Noto Sans Bold", zoomed([[12, 11.5], [16, 13.5]])), paint: labelPaint });
   map.addLayer({ id: "stop-label", type: "symbol", source: "stops", filter: ["==", ["get", "g"], -1],
-    layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Bold"], "text-size": 13, "text-offset": [0, 1.3], "text-anchor": "top" },
-    paint: { "text-color": dark ? "#e8f0ec" : "#163f30", "text-halo-color": casing, "text-halo-width": 2 } });
+    layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Bold"], "text-size": 15, "text-offset": [0, 1.4], "text-anchor": "top", "text-allow-overlap": true },
+    paint: { "text-color": ink, "text-halo-color": casing, "text-halo-width": 2.2 } });
   applyMapFilters();
   highlightGroup();
   if (state.journey) drawJourney(state.journey);
+}
+
+// Små skyltar med linjenumret i linjens färg, som bilder i kartan.
+function addLineBadges() {
+  const ratio = Math.min(3, Math.ceil(devicePixelRatio || 1));
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const font = `700 ${12 * ratio}px "Atkinson Hyperlegible", system-ui, sans-serif`;
+  for (const r of net.routes) {
+    const id = `line-${r.name}`;
+    if (map.hasImage(id)) continue;
+    ctx.font = font;
+    const w = Math.ceil(Math.max(26 * ratio, ctx.measureText(r.name).width + 12 * ratio)), hgt = 18 * ratio;
+    const bw = 2 * ratio;
+    canvas.width = w + bw * 2;
+    canvas.height = hgt + bw * 2;
+    ctx.font = font;
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.roundRect(0, 0, canvas.width, canvas.height, 7 * ratio);
+    ctx.fill();
+    ctx.fillStyle = r.c;
+    ctx.beginPath();
+    ctx.roundRect(bw, bw, w, hgt, 5 * ratio);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(r.name, canvas.width / 2, canvas.height / 2 + ratio);
+    map.addImage(id, ctx.getImageData(0, 0, canvas.width, canvas.height), { pixelRatio: ratio });
+  }
 }
 
 function routeGeoJSON() {
   const features = [];
   net.routes.forEach((r, ri) =>
     r.variants.forEach((v) =>
-      features.push({ type: "Feature", properties: { r: ri, c: r.c, kind: r.kind, main: v.main, extra: r.tier === "extra" }, geometry: { type: "LineString", coordinates: v.path } }),
+      features.push({ type: "Feature", properties: { r: ri, c: r.c, name: r.name, kind: r.kind, main: v.main, extra: r.tier === "extra", rank: r.tier === "stom" ? 0 : 1 }, geometry: { type: "LineString", coordinates: v.path } }),
     ),
   );
   // Huvudlinjer sist så att de ritas överst i samma lager; stomlinjer överst.
@@ -447,11 +526,20 @@ function routeGeoJSON() {
 function stopGeoJSON() {
   return {
     type: "FeatureCollection",
-    features: groups.map((g, gi) => ({
-      type: "Feature",
-      properties: { g: gi, name: shortName(g.name), kinds: [...new Set([...g.routes].map((r) => net.routes[r].kind))].join(","), extraOnly: [...g.routes].every((r) => net.routes[r].tier === "extra") },
-      geometry: { type: "Point", coordinates: [g.lon, g.lat] },
-    })),
+    features: groups.map((g, gi) => {
+      const routes = [...g.routes];
+      const n = routes.filter((r) => net.routes[r].tier !== "extra").length;
+      return {
+        type: "Feature",
+        properties: {
+          g: gi, name: shortName(g.name), n, hub: n >= 3,
+          rs: `,${routes.join(",")},`,
+          kinds: [...new Set(routes.map((r) => net.routes[r].kind))].join(","),
+          extraOnly: routes.every((r) => net.routes[r].tier === "extra"),
+        },
+        geometry: { type: "Point", coordinates: [g.lon, g.lat] },
+      };
+    }),
   };
 }
 
@@ -466,11 +554,30 @@ function applyMapFilters() {
   map.setFilter("route-alt", state.alt
     ? ["all", ["!", ["get", "main"]], kindFilter, state.extra ? true : ["!", ["get", "extra"]]]
     : ["all", ["==", ["get", "r"], sel], ["!", ["get", "main"]]]);
-  for (const l of ["route-line", "route-extra"]) map.setPaintProperty(l, "line-opacity", dim ? 0.22 : 0.92);
+  for (const l of ["route-line", "route-extra"]) map.setPaintProperty(l, "line-opacity", dim ? 0.2 : 0.95);
+  map.setPaintProperty("route-casing", "line-opacity", dim ? 0.5 : 0.95);
   map.setPaintProperty("route-alt", "line-opacity", dim && state.route == null ? 0.2 : 0.8);
   map.setFilter("route-selected", ["all", ["==", ["get", "r"], sel], ["get", "main"]]);
+  map.setFilter("route-selected-casing", ["all", ["==", ["get", "r"], sel], ["get", "main"]]);
+  // Linjenummer: alla visade linjer, eller bara den valda.
+  map.setFilter("route-badges", state.bus != null ? ["==", ["get", "r"], -1]
+    : state.route != null ? ["all", ["==", ["get", "r"], sel], ["get", "main"]]
+    : ["all", ["get", "main"], kindFilter, state.extra ? true : ["!", ["get", "extra"]]]);
   const stopFilter = ["all", state.kind === "all" ? true : ["in", state.kind, ["get", "kinds"]], state.extra ? true : ["!", ["get", "extraOnly"]]];
   map.setFilter("stops", stopFilter);
+  map.setFilter("stop-hubs", ["all", stopFilter, ["get", "hub"]]);
+  map.setFilter("stop-names", ["all", stopFilter, ["!", ["get", "hub"]]]);
+  map.setFilter("hub-names", ["all", stopFilter, ["get", "hub"]]);
+  const onRoute = state.route != null ? ["in", `,${state.route},`, ["get", "rs"]] : false;
+  map.setFilter("route-stops", onRoute || ["==", ["get", "g"], -1]);
+  map.setFilter("route-stop-names", onRoute || ["==", ["get", "g"], -1]);
+  if (state.route != null) map.setPaintProperty("route-stops", "circle-stroke-color", net.routes[state.route].c);
+  // När en linje är vald tonas övriga hållplatser ner.
+  for (const l of ["stops", "stop-hubs"]) {
+    map.setPaintProperty(l, "circle-opacity", dim ? 0.45 : 1);
+    map.setPaintProperty(l, "circle-stroke-opacity", dim ? 0.35 : 1);
+  }
+  for (const l of ["stop-names", "hub-names"]) map.setPaintProperty(l, "text-opacity", dim ? 0.5 : 1);
 }
 
 function highlightGroup() {
@@ -534,14 +641,29 @@ function drawSchematic() {
     onStop: (g) => selectGroup(g),
     onRoute: (ri) => openLine(ri),
     selectedRoute: state.route,
+    padding: viewPadding,
     extra: new Set(idx.filter((i) => net.routes[i].tier === "extra")),
   });
+}
+
+// Linjeraden: en färgad skylt per linje som visas, för att snabbt välja en linje.
+function renderLegend() {
+  const box = $("#legend");
+  const list = net.routes.map((r, ri) => [r, ri]).filter(([r]) => routeShown(r))
+    .sort(([a], [b]) => (a.tier === "extra") - (b.tier === "extra") || a.name.localeCompare(b.name, "sv", { numeric: true }));
+  box.classList.toggle("has-sel", state.route != null);
+  put(box, list.map(([r, ri]) => h("button", {
+    type: "button", class: `badge${r.tier === "extra" ? " extra" : ""}${state.route === ri ? " sel" : ""}`, style: `--c:${r.c}`,
+    "aria-pressed": state.route === ri, "aria-label": `Linje ${r.name}`, title: mainHeadsigns(r).map(shortName).join(" – "),
+    onclick: () => (state.route === ri ? showHome() : openLine(ri)),
+  }, r.name)));
 }
 
 // --- Linje -------------------------------------------------------------------------
 
 function selectRoute(ri, { fit = false } = {}) {
   state.route = ri;
+  renderLegend();
   applyMapFilters();
   state.schem?.select(ri);
   for (const v of state.vehicles.values()) styleMarker(v);
@@ -561,6 +683,7 @@ function openLine(ri, { fit = true } = {}) {
   const r = net.routes[ri];
   if (!kindMatches(r)) setKind(r.kind);
   if (r.tier === "extra" && !state.extra) setExtra(true);
+  sheet("half"); // före inpassningen, så att linjen hamnar ovanför arket på mobil
   selectRoute(ri, { fit });
   const main = r.variants.filter((v) => v.main).sort((a, b) => b.stops.length - a.stops.length)[0];
   const seen = new Set();
