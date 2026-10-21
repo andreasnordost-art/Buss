@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Busskollen Övik</title>
+  <meta name="description" content="Bussarna i Örnsköldsvik live på kartan, avgångar och reseförslag. Data från Din Tur via Trafiklab.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b6e8a'/%3E%3Crect x='8' y='7' width='16' height='16' rx='3' fill='white'/%3E%3Crect x='10' y='10' width='12' height='6' fill='%230b6e8a'/%3E%3Ccircle cx='11.5' cy='25' r='2' fill='white'/%3E%3Ccircle cx='20.5' cy='25' r='2' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#panel">Hoppa till avgångar och reseplanering</a>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <h1>Busskollen Övik</h1>
+      </div>
+      <span id="status" class="status" role="status">Ansluter…</span>
+    </header>
+
+    <section class="mapwrap" aria-label="Karta">
+      <div id="map"></div>
+      <div class="mapbar">
+        <div class="seg" role="radiogroup" aria-label="Visa linjer">
+          <button type="button" role="radio" data-kind="all" aria-checked="true">Alla</button>
+          <button type="button" role="radio" data-kind="tatort" aria-checked="false">Tätort</button>
+          <button type="button" role="radio" data-kind="landsbygd" aria-checked="false">Landsbygd</button>
+        </div>
+        <button type="button" id="locate" class="iconbtn" aria-label="Visa var jag är">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+        </button>
+      </div>
+      <div id="lineinfo" class="lineinfo" hidden></div>
+    </section>
+
+    <aside id="panel" class="panel">
+      <div id="alerts" class="alerts" hidden></div>
+
+      <nav class="tabs" role="tablist">
+        <button type="button" role="tab" id="tab-dep" aria-controls="view-dep" aria-selected="true">Avgångar</button>
+        <button type="button" role="tab" id="tab-trip" aria-controls="view-trip" aria-selected="false">Sök resa</button>
+        <button type="button" role="tab" id="tab-lines" aria-controls="view-lines" aria-selected="false">Linjer</button>
+      </nav>
+
+      <section id="view-dep" role="tabpanel" aria-labelledby="tab-dep" class="view">
+        <label class="field">
+          <span>Hållplats</span>
+          <input id="stop-input" type="search" placeholder="T.ex. Resecentrum" autocomplete="off" list="stop-names">
+        </label>
+        <div id="nearby" class="chips"></div>
+        <h2 id="dep-title" class="h2" hidden></h2>
+        <ol id="departures" class="deps"></ol>
+        <p id="dep-empty" class="muted">Välj en hållplats i listan, på kartan eller med knappen för din position.</p>
+      </section>
+
+      <section id="view-trip" role="tabpanel" aria-labelledby="tab-trip" class="view" hidden>
+        <form id="trip-form" class="tripform">
+          <label class="field"><span>Från</span><input id="trip-from" type="search" list="stop-names" autocomplete="off" required></label>
+          <button type="button" id="swap" class="linkbtn">⇅ Byt riktning</button>
+          <label class="field"><span>Till</span><input id="trip-to" type="search" list="stop-names" autocomplete="off" required></label>
+          <label class="field"><span>Avgång tidigast</span><input id="trip-time" type="time" required></label>
+          <button type="submit" class="primary">Sök resa</button>
+        </form>
+        <ol id="trip-results" class="trips"></ol>
+        <p class="muted small">Visar direktresor och resor med ett byte (minst 5 minuter). Hitta fler alternativ hos <a href="https://www.dintur.se/sok-resa/" target="_blank" rel="noopener">Din Tur ↗</a>.</p>
+      </section>
+
+      <section id="view-lines" role="tabpanel" aria-labelledby="tab-lines" class="view" hidden>
+        <p class="muted small">Tryck på en linje för att se den på kartan.</p>
+        <ul id="lines" class="lines"></ul>
+      </section>
+
+      <footer class="foot">
+        <a href="https://mypages.vn.prod.mcs.fara.no/mypages/tickets" target="_blank" rel="noopener">Köp biljett hos Din Tur ↗</a>
+        <p>Busskollen Övik är en fristående tjänst och inte Din Turs officiella app. Data från Din Tur via <a href="https://www.trafiklab.se/api/gtfs-datasets/gtfs-regional/" target="_blank" rel="noopener">Trafiklab</a> (CC0). Karta © <a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a>, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>.</p>
+      </footer>
+    </aside>
+  </div>
+  <datalist id="stop-names"></datalist>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js" type="module"></script>
+</body>
+</html>

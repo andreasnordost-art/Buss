@@ -1,0 +1,6 @@
+route_id,service_id,trip_id,trip_headsign,direction_id,shape_id
+R1,WK,T1,Gullänget,0,S1
+R1,WK,T2,Gullänget,0,S1
+R1,WK,T3,Resecentrum,1,
+R40,ALL,T4,Bjästa,0,
+R99,ALL,T5,Umeå,0,

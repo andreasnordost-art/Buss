@@ -1,0 +1,16 @@
+{
+  "name": "buss",
+  "private": true,
+  "description": "Busskollen Övik: bussarna i Örnsköldsvik live på kartan",
+  "type": "module",
+  "scripts": {
+    "test": "node test/build.test.mjs && node test/realtime.test.mjs",
+    "build": "node scripts/build-data.mjs"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "protobufjs": "^7.4.0"
+  }
+}

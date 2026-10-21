@@ -1,0 +1,4 @@
+route_id,route_short_name,route_long_name,route_type,route_color
+R1,1,Resecentrum–Gullänget,700,
+R40,40,Örnsköldsvik–Bjästa,700,
+R99,99,Umeå–Övik,700,

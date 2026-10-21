@@ -1,0 +1,11 @@
+name = "buss-rt"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[vars]
+OPERATOR = "dintur"
+# Sidor som får läsa från proxyn, kommaseparerade.
+ALLOWED_ORIGINS = "https://andreasnordost-art.github.io"
+# Cachetid i sekunder. Höj om Trafiklab-kvoten tar slut.
+TTL_VEHICLES = "15"
+TTL_UPDATES = "30"

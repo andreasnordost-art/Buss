@@ -1,0 +1,22 @@
+# Publicerar realtidsproxyn på Cloudflare när koden i worker/ ändras.
+name: Realtidsproxy
+
+on:
+  push:
+    branches: [main]
+    paths: ["worker/**"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          secrets: TRAFIKLAB_RT_KEY
+        env:
+          TRAFIKLAB_RT_KEY: ${{ secrets.TRAFIKLAB_RT_KEY }}
