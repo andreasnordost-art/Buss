@@ -33,7 +33,8 @@ jobs:
       - name: Realtidsadress
         env:
           RT_API_URL: ${{ vars.RT_API_URL }}
-        run: printf 'window.BUSS_CONFIG = { api: "%s" };\n' "$RT_API_URL" > public/config.js
+        run: |
+          printf 'window.BUSS_CONFIG = { api: "%s" };\n' "$RT_API_URL" > public/config.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: public
