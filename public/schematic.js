@@ -38,13 +38,13 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
   const routeSeqs = new Map();
   for (const ri of routeIdx) {
     const seqs = net.routes[ri].variants
-      .map((v) => {
+      .map((v, vi) => {
         const seq = [];
         for (const s of v.stops) {
           const g = stopGroup[s];
           if (seq[seq.length - 1] !== g) seq.push(g);
         }
-        return { seq, trips: v.trips || 1, path: v.path };
+        return { seq, trips: v.trips || 1, path: v.path, vi };
       })
       .filter((v) => v.seq.length > 1);
     if (seqs.length) routeSeqs.set(ri, seqs);
@@ -362,7 +362,10 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     for (let i = 1; i < n - 1; i++) if (!key.has(c.nodes[i])) pos.set(c.nodes[i], c.nodePos[i]);
   }
 
-  return { chains, pos, key, center, routes: routeIdx, links };
+  // Varje turs väg genom linjenätet (med förbipasserade hållplatser), för att kunna visa
+  // en enskild färdväg: ri -> vi -> [grupp].
+  const variantSeqs = new Map([...routeSeqs].map(([ri, seqs]) => [ri, new Map(seqs.map((v) => [v.vi, v.seq]))]));
+  return { chains, pos, key, center, routes: routeIdx, links, variantSeqs };
 }
 
 // Hållplatser på linjen som turen kör förbi utan att stanna, enligt bussens väg (formen i
@@ -623,10 +626,11 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   const extraG = el("g", { class: "routes extras" });
   const linesG = el("g", { class: "routes" });
   const arrowsG = el("g", { class: "arrow-layer" });
+  const patternG = el("g", { class: "pattern-layer" });
   const stopsG = el("g", { class: "stations" });
   const labelsG = el("g", { class: "labels" });
   const busesG = el("g", { class: "buses" });
-  view.append(extraG, linesG, arrowsG, stopsG, labelsG, busesG);
+  view.append(extraG, linesG, arrowsG, patternG, stopsG, labelsG, busesG);
 
   const step = LW + GAP;
   // Tunna, streckade linjer: skol- och specialturer och alternativa färdvägar.
@@ -751,6 +755,40 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
 
   let lastPts = new Map();
   let pz = null;
+  // En vald färdväg (en eller flera turer på en linje) ritas tjock ovanpå, med pilar.
+  let pattern = null; // { ri, seqs }
+  function drawPattern(pts, f) {
+    patternG.replaceChildren();
+    svg.classList.toggle("has-pattern", !!pattern);
+    if (!pattern) return;
+    const color = net.routes[pattern.ri].c;
+    for (const seq of pattern.seqs) {
+      const line = [];
+      for (let i = 1; i < seq.length; i++) {
+        const [a, b] = [seq[i - 1], seq[i]];
+        let part = null;
+        for (const c of layout.chains) {
+          const j = c.nodes.findIndex((g, n) => (g === a && c.nodes[n + 1] === b) || (g === b && c.nodes[n + 1] === a));
+          if (j < 0) continue;
+          const slot = slots.get(c)?.get(pattern.ri) ?? 0;
+          const cp = pts.get(c);
+          const sub = c.verts.map((v, n) => [v, cp[n]]).filter(([v]) => v.idx >= j - 1e-9 && v.idx <= j + 1 + 1e-9).map(([, p]) => p);
+          part = offsetLine(dedupePts(sub), slot * step * f);
+          if (c.nodes[j] !== a) part.reverse();
+          break;
+        }
+        line.push(...(part || [nodeAt(a), nodeAt(b)]));
+      }
+      const d = dedupePts(line);
+      if (d.length < 2) continue;
+      const path = el("path", { class: "pattern", stroke: color, d: `M${d.map((p) => p.map((v) => v.toFixed(2)).join(" ")).join("L")}` });
+      path.style.strokeWidth = `${LW * 1.7 * f}px`;
+      const arrows = el("path", { class: "arrows", style: `fill:${color}`, d: arrowPath(d, 7.5 * f, 70 * f) });
+      arrows.style.strokeWidth = `${1.2 * f}px`;
+      patternG.append(path, arrows);
+    }
+  }
+
   function draw() {
     const f = sizeFactor(k);
     // Där fem eller fler linjer går tillsammans visas vanliga hållplatser först när man zoomat in.
@@ -772,6 +810,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
         arrows.setAttribute("d", arrowPath(c.dir.get(ri) > 0 ? line : [...line].reverse(), (isExtra ? 5 : 7) * f, 80 * f));
       }
     }
+    drawPattern(pts, f);
     for (const st of stations) {
       st.el.style.strokeWidth = `${(st.r ? 1.8 : 1.1) * f}px`;
       st.off = st.minor && !(st.c ? st.c.routes.includes(selRoute) : groups[st.g].routes.has(selRoute));
@@ -1007,6 +1046,12 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
         for (const p of g.children) p.classList.toggle("sel", +p.dataset.route === ri);
         for (const p of [...g.children]) if (+p.dataset.route === ri) g.append(p);
       }
+    },
+    // Visa en färdväg: turerna vis på linjen ri (null tar bort).
+    showPattern(ri, vis) {
+      const seqs = ri == null ? [] : vis.map((vi) => layout.variantSeqs?.get(ri)?.get(vi)).filter(Boolean);
+      pattern = seqs.length ? { ri, seqs } : null;
+      draw();
     },
     fit: pz.fit,
     zoom: pz.zoom,

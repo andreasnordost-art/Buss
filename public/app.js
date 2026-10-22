@@ -6,7 +6,7 @@
 //                       turer och reseförslag ur den och realtiden från proxyn
 //   CONFIG.api + /api/  reserv: Busskollens API via proxyn, om den egna datan saknas
 
-import { groupStops, distance, shortName } from "./network.js";
+import { groupStops, distance, shortName, bundleLegs, routePatterns } from "./network.js";
 import { createLive } from "./live.js";
 import { layoutSchematic, renderSchematic } from "./schematic.js";
 
@@ -442,6 +442,7 @@ function addLayers() {
   const ink = dark ? "#e8f0ec" : "#163f30";
   addLineBadges();
   map.addSource("routes", { type: "geojson", data: routeGeoJSON() });
+  map.addSource("bundles", { type: "geojson", data: bundleGeoJSON() });
   map.addSource("stops", { type: "geojson", data: stopGeoJSON() });
   map.addSource("journey", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   // Linjerna läggs under kartans egna namn, så att ortnamn och gatunamn syns ovanpå.
@@ -454,14 +455,21 @@ function addLayers() {
     layout: { "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(1.8, 3.5), "line-dasharray": [1.5, 1.5], "line-opacity": 0.8 } }, below);
   map.addLayer({ id: "route-extra", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
     layout: { "line-join": "round" }, paint: { "line-color": ["get", "c"], "line-width": width(1.6, 3), "line-dasharray": [2, 1.5] } }, below);
-  map.addLayer({ id: "route-casing", type: "line", source: "routes", filter: ["get", "main"],
-    layout: round, paint: { "line-color": casing, "line-width": width(6, 12), "line-opacity": 0.95 } }, below);
-  map.addLayer({ id: "route-line", type: "line", source: "routes", filter: ["get", "main"],
-    layout: round, paint: { "line-color": ["get", "c"], "line-width": width(3.2, 6.5) } }, below);
+  // Linjer som kör samma väg läggs bredvid varandra när man zoomat in (se bundleLegs).
+  const offset = zoomed([[10.5, 0], [12, ["*", ["get", "o"], 3.2]], [16, ["*", ["get", "o"], 6.5]]]);
+  map.addLayer({ id: "route-casing", type: "line", source: "bundles", filter: ["get", "main"],
+    layout: round, paint: { "line-color": casing, "line-width": width(6, 12), "line-opacity": 0.95, "line-offset": offset } }, below);
+  map.addLayer({ id: "route-line", type: "line", source: "bundles", filter: ["get", "main"],
+    layout: round, paint: { "line-color": ["get", "c"], "line-width": width(3.2, 6.5), "line-offset": offset } }, below);
   map.addLayer({ id: "route-selected-casing", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
     layout: round, paint: { "line-color": casing, "line-width": width(9, 15) } }, below);
   map.addLayer({ id: "route-selected", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
     layout: round, paint: { "line-color": ["get", "c"], "line-width": width(5, 9) } }, below);
+  // En vald färdväg på linjen, tjock och med pilar i färdriktningen.
+  map.addLayer({ id: "route-pattern-casing", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
+    layout: round, paint: { "line-color": casing, "line-width": width(10, 16) } }, below);
+  map.addLayer({ id: "route-pattern", type: "line", source: "routes", filter: ["==", ["get", "r"], -1],
+    layout: round, paint: { "line-color": ["get", "c"], "line-width": width(6, 10) } }, below);
   map.addLayer({ id: "journey-done", type: "line", source: "journey", filter: ["==", ["get", "part"], "done"],
     layout: round, paint: { "line-color": ["get", "c"], "line-width": width(3.5, 7), "line-opacity": 0.3 } }, below);
   map.addLayer({ id: "journey-left", type: "line", source: "journey", filter: ["==", ["get", "part"], "left"],
@@ -474,6 +482,8 @@ function addLayers() {
   map.addLayer({ id: "route-badges-minor", type: "symbol", source: "routes", minzoom: 12.5, filter: ["==", ["get", "r"], -1],
     layout: { ...badgeLayout, "icon-size": 0.85 }, paint: { "icon-opacity": 0.55 } });
   map.addLayer({ id: "route-badges", type: "symbol", source: "routes", minzoom: 12.5, filter: ["==", ["get", "r"], -1], layout: badgeLayout });
+  map.addLayer({ id: "route-pattern-arrows", type: "symbol", source: "routes", filter: ["==", ["get", "r"], -1],
+    layout: { "symbol-placement": "line", "symbol-spacing": 80, "icon-image": "pattern-arrow", "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-size": zoomed([[10, 0.8], [16, 1.3]]) } });
   map.addLayer({ id: "journey-stops", type: "circle", source: "journey", filter: ["==", ["get", "part"], "stop"],
     paint: { "circle-radius": zoomed([[11, 3.5], [16, 6]]), "circle-color": casing, "circle-stroke-color": ["get", "c"], "circle-stroke-width": 2.5 } });
   // Hållplatser: knutpunkter syns tidigt och större, övriga när man zoomat in.
@@ -509,6 +519,19 @@ function addLineBadges() {
   const ratio = Math.min(3, Math.ceil(devicePixelRatio || 1));
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
+  // Vit pil åt höger (längs linjen) för en vald färdväg.
+  if (!map.hasImage("pattern-arrow")) {
+    canvas.width = canvas.height = 14 * ratio;
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.moveTo(12 * ratio, 7 * ratio);
+    ctx.lineTo(3 * ratio, 2 * ratio);
+    ctx.lineTo(5.5 * ratio, 7 * ratio);
+    ctx.lineTo(3 * ratio, 12 * ratio);
+    ctx.closePath();
+    ctx.fill();
+    map.addImage("pattern-arrow", ctx.getImageData(0, 0, canvas.width, canvas.height), { pixelRatio: ratio });
+  }
   const font = `700 ${12 * ratio}px "Atkinson Hyperlegible", system-ui, sans-serif`;
   for (const r of net.routes) {
     const id = `line-${r.name}`;
@@ -538,13 +561,28 @@ function addLineBadges() {
 function routeGeoJSON() {
   const features = [];
   net.routes.forEach((r, ri) =>
-    r.variants.forEach((v) =>
-      features.push({ type: "Feature", properties: { r: ri, c: r.c, name: r.name, kind: r.kind, main: v.main, extra: r.tier === "extra", rank: r.tier === "stom" ? 0 : 1 }, geometry: { type: "LineString", coordinates: v.path } }),
+    r.variants.forEach((v, vi) =>
+      features.push({ type: "Feature", properties: { r: ri, vi, c: r.c, name: r.name, kind: r.kind, main: v.main, extra: r.tier === "extra", rank: r.tier === "stom" ? 0 : 1 }, geometry: { type: "LineString", coordinates: v.path } }),
     ),
   );
   // Huvudlinjer sist så att de ritas överst i samma lager; stomlinjer överst.
   const rank = (f) => (f.properties.main ? 1 : 0) + (net.routes[f.properties.r].tier === "stom" ? 1 : 0);
   features.sort((a, b) => rank(a) - rank(b));
+  return { type: "FeatureCollection", features };
+}
+
+// Huvudlinjerna i etapper med läge i knippet. Byggs om när urvalet av linjer ändras,
+// så att bara de linjer som syns delar på vägen.
+let bundleKey = null;
+function bundleGeoJSON() {
+  const idx = net.routes.map((_, i) => i).filter((i) => kindMatches(net.routes[i]) && net.routes[i].tier !== "extra");
+  bundleKey = idx.join(",");
+  const features = bundleLegs(net, stopGroup, idx).map(({ ri, pts, o }) => {
+    const r = net.routes[ri];
+    return { type: "Feature", properties: { r: ri, c: r.c, name: r.name, kind: r.kind, main: true, extra: false, o }, geometry: { type: "LineString", coordinates: pts } };
+  });
+  // Stomlinjer överst.
+  features.sort((a, b) => (net.routes[a.properties.r].tier === "stom") - (net.routes[b.properties.r].tier === "stom"));
   return { type: "FeatureCollection", features };
 }
 
@@ -570,6 +608,8 @@ function stopGeoJSON() {
 
 function applyMapFilters() {
   if (!map?.getLayer("route-line")) return;
+  const shown = net.routes.map((_, i) => i).filter((i) => kindMatches(net.routes[i]) && net.routes[i].tier !== "extra").join(",");
+  if (shown !== bundleKey) map.getSource("bundles").setData(bundleGeoJSON());
   const kindFilter = state.kind === "all" ? true : ["==", ["get", "kind"], state.kind];
   const sel = state.route ?? -1;
   const dim = state.route != null || state.bus != null;
@@ -582,6 +622,9 @@ function applyMapFilters() {
   for (const l of ["route-line", "route-extra"]) map.setPaintProperty(l, "line-opacity", dim ? 0.2 : 0.95);
   map.setPaintProperty("route-casing", "line-opacity", dim ? 0.5 : 0.95);
   map.setPaintProperty("route-alt", "line-opacity", dim && state.route == null ? 0.2 : 0.8);
+  const pat = state.pattern && state.pattern.ri === state.route ? ["all", ["==", ["get", "r"], sel], ["in", ["get", "vi"], ["literal", state.pattern.variants]]] : ["==", ["get", "r"], -1];
+  for (const l of ["route-pattern-casing", "route-pattern", "route-pattern-arrows"]) map.setFilter(l, pat);
+  map.setPaintProperty("route-selected", "line-opacity", state.pattern ? 0.3 : 1);
   map.setFilter("route-selected", ["all", ["==", ["get", "r"], sel], ["get", "main"]]);
   map.setFilter("route-selected-casing", ["all", ["==", ["get", "r"], sel], ["get", "main"]]);
   // Linjenummer: alla visade linjer, eller bara den valda. Streckade linjer får bleka skyltar.
@@ -705,10 +748,12 @@ function renderLegend() {
 // --- Linje -------------------------------------------------------------------------
 
 function selectRoute(ri, { fit = false } = {}) {
+  if (state.route !== ri) state.pattern = null;
   state.route = ri;
   renderLegend();
   applyMapFilters();
   state.schem?.select(ri);
+  state.schem?.showPattern(state.pattern?.ri ?? null, state.pattern?.variants || []);
   for (const v of state.vehicles.values()) styleMarker(v);
   syncSchemBuses();
   if (ri != null && fit && map && state.view === "map") {
@@ -742,11 +787,47 @@ function openLine(ri, { fit = true } = {}) {
     ].filter(Boolean).join(" · ")),
     r.variants.some((v) => !v.main) ? h("p", { class: "small muted" }, "Streckat på kartan: turer som går en annan väg.") : null,
     lineAlerts(r),
+    linePatterns(ri),
     h("h3", { class: "label" }, `Hållplatser mot ${shortName(main?.headsign || "")}`),
     h("ol", { class: "stoplist" }, stops.map((gi) => h("li", {}, h("button", { type: "button", onclick: () => selectGroup(gi, { fly: true }) }, groups[gi].name)))),
   );
   showPart("line");
   updateUrl();
+}
+
+// Så går bussarna: linjens olika färdvägar per riktning. Ett tryck visar färdvägen på
+// kartan och i linjenätet, med pilar i färdriktningen.
+function linePatterns(ri) {
+  const dirs = routePatterns(net, stopGroup, ri).filter((d) => d.routes.length);
+  if (!dirs.some((d) => d.routes.length > 1)) return null;
+  const name = (g) => shortName(groups[g].name);
+  const box = h("div", { class: "patterns" });
+  const render = () => put(box,
+    h("h3", { class: "label" }, "Så går bussarna"),
+    h("p", { class: "small muted" }, "Linjen kör på flera sätt. Tryck på en färdväg för att se den."),
+    ...dirs.map((d) => h("div", {},
+      h("p", { class: "small" }, h("b", {}, `Mot ${shortName(d.headsign)}`)),
+      h("ul", { class: "plist" }, d.routes.map((p) => {
+        const on = state.pattern?.ri === ri && state.pattern.key === `${d.dir}:${p.variants.join(",")}`;
+        return h("li", {}, h("button", {
+          type: "button", class: on ? "on" : "", "aria-pressed": on,
+          onclick: () => {
+            state.pattern = on ? null : { ri, key: `${d.dir}:${p.variants.join(",")}`, variants: p.variants };
+            applyMapFilters();
+            state.schem?.showPattern(state.pattern ? ri : null, state.pattern?.variants || []);
+            if (state.pattern && map && state.view === "map") {
+              const b = new maplibregl.LngLatBounds();
+              p.variants.forEach((vi) => net.routes[ri].variants[vi].path.forEach((pt) => b.extend(pt)));
+              map.fitBounds(b, { padding: fitPadding(), maxZoom: 14 });
+            }
+            render();
+          },
+        }, h("span", {}, `${name(p.from)} → ${name(p.to)}`, p.via.length ? h("small", {}, ` via ${p.via.map(name).join(", ")}`) : null),
+        h("small", { class: "muted" }, `${p.trips} av ${d.total} turer`)));
+      })),
+      d.rest ? h("p", { class: "small muted" }, `och ${d.rest} ${d.rest === 1 ? "tur" : "turer"} på andra vägar`) : null)));
+  render();
+  return box;
 }
 
 function lineAlerts(r) {
