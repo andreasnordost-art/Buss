@@ -20,43 +20,13 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
   const power = opts.power ?? 0.5; // < 1 förstorar centrum
 
   // --- Graf --------------------------------------------------------------------
-  // Varje linje ritas som en väg: huvudformen med flest hållplatser, plus de delar av
-  // motsatt riktning som går via andra hållplatser (t.ex. enkelriktade slingor).
-  const paths = [];
-  for (const ri of routeIdx) {
-    const seqs = net.routes[ri].variants
-      .filter((v) => v.main)
-      .map((v) => {
-        const seq = [];
-        for (const s of v.stops) {
-          const g = stopGroup[s];
-          if (seq[seq.length - 1] !== g) seq.push(g);
-        }
-        return seq;
-      })
-      .filter((seq) => seq.length > 1)
-      .sort((a, b) => b.length - a.length);
-    if (!seqs.length) continue;
-    const seen = new Set(seqs[0]);
-    paths.push({ ri, seq: seqs[0] });
-    for (const seq of seqs.slice(1)) {
-      // Behåll bara bitar som rör nya hållplatser, med en känd hållplats i varje ände.
-      let part = [];
-      for (let i = 0; i < seq.length; i++) {
-        const fresh = !seen.has(seq[i]);
-        if (fresh) {
-          if (!part.length && i > 0) part.push(seq[i - 1]);
-          part.push(seq[i]);
-        } else if (part.length) {
-          part.push(seq[i]);
-          paths.push({ ri, seq: part });
-          part = [];
-        }
-      }
-      if (part.length > 1) paths.push({ ri, seq: part });
-      seq.forEach((g) => seen.add(g));
-    }
-  }
+  // Alla turer räknas, och varje del av en linje vägs efter hur många turer om dagen som
+  // kör den. Det som minst 30 % av linjens mest trafikerade del har är huvudfärdväg. Det
+  // som bara några turer kör blir en alternativ färdväg (ritas tunt och streckat), och
+  // enstaka turer som går en egen väg hoppas över. Skol- och specialturer visar bara sin
+  // huvudfärdväg.
+  const mainShare = opts.mainShare ?? 0.3;
+  const altTrips = opts.altTrips ?? 2;
   const edges = new Map();
   const adj = new Map();
   const ekey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -64,25 +34,83 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     if (!adj.has(a)) adj.set(a, new Set());
     adj.get(a).add(b);
   };
-  for (const { ri, seq } of paths) {
-    for (let i = 1; i < seq.length; i++) {
-      const [a, b] = [seq[i - 1], seq[i]];
-      if (a === b) continue;
-      const k = ekey(a, b);
-      if (!edges.has(k)) edges.set(k, { a, b, routes: new Set() });
+  const dist = (a, b) => distance(groups[a].lat, groups[a].lon, groups[b].lat, groups[b].lon);
+  for (const ri of routeIdx) {
+    const r = net.routes[ri];
+    let seqs = r.variants
+      .map((v) => {
+        const seq = [];
+        for (const s of v.stops) {
+          const g = stopGroup[s];
+          if (seq[seq.length - 1] !== g) seq.push(g);
+        }
+        return { seq, trips: v.trips || 1, path: v.path };
+      })
+      .filter((v) => v.seq.length > 1);
+    if (!seqs.length) continue;
+    seqs = viaPassedStops(passedOnRoad(seqs, groups), dist, ekey);
+    const w = new Map();
+    for (const { seq, trips } of seqs) {
+      const seen = new Set();
+      for (let i = 1; i < seq.length; i++) {
+        const k = ekey(seq[i - 1], seq[i]);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        w.set(k, (w.get(k) || 0) + trips);
+      }
+    }
+    const top = Math.max(...w.values());
+    const extraRoute = r.tier === "extra";
+    const kept = new Map(); // ekey -> alternativ färdväg?
+    for (const [k, x] of w) {
+      if (x >= top * mainShare) kept.set(k, false);
+      else if (!extraRoute && x >= altTrips) kept.set(k, true);
+    }
+    // Bara den sammanhängande delen med den mest trafikerade sträckan, så att inga lösa
+    // bitar blir kvar när enstaka turer tas bort. Huvudfärdvägen ska också hänga ihop:
+    // fattas en bit emellan blir den alternativa vägen dit en del av huvudfärdvägen.
+    const nbr = new Map();
+    for (const k of kept.keys()) {
+      const [a, b] = k.split("|").map(Number);
+      (nbr.get(a) || nbr.set(a, []).get(a)).push(b);
+      (nbr.get(b) || nbr.set(b, []).get(b)).push(a);
+    }
+    const reach = (from, ok) => {
+      const prev = new Map(from.map((g) => [g, null]));
+      const queue = [...from];
+      while (queue.length) {
+        const g = queue.shift();
+        for (const o of nbr.get(g) || []) if (!prev.has(o) && ok(ekey(g, o))) (prev.set(o, g), queue.push(o));
+      }
+      return prev;
+    };
+    const start = Number([...w].sort((x, y) => y[1] - x[1])[0][0].split("|")[0]);
+    const all = reach([start], () => true);
+    for (let guard = 0; guard < 20; guard++) {
+      const main = reach([start], (k) => kept.get(k) === false);
+      const onMain = (g) => (nbr.get(g) || []).some((o) => kept.get(ekey(g, o)) === false);
+      const prev = reach([...main.keys()], () => true);
+      const goal = [...prev.keys()].find((g) => !main.has(g) && onMain(g));
+      if (goal == null) break;
+      for (let g = goal; prev.get(g) != null; g = prev.get(g)) kept.set(ekey(g, prev.get(g)), false);
+    }
+    for (const [k, alt] of kept) {
+      const [a, b] = k.split("|").map(Number);
+      if (!all.has(a)) continue;
+      if (!edges.has(k)) edges.set(k, { a, b, routes: new Set(), alt: new Set() });
       edges.get(k).routes.add(ri);
+      if (alt) edges.get(k).alt.add(ri);
       link(a, b);
       link(b, a);
     }
   }
-  const routeSet = (a, b) => [...edges.get(ekey(a, b)).routes].sort((x, y) => x - y).join(",");
+  const routeSet = (a, b) => {
+    const e = edges.get(ekey(a, b));
+    return [...e.routes].sort((x, y) => x - y).map((ri) => (e.alt.has(ri) ? `${ri}a` : ri)).join(",");
+  };
 
   // --- Knutpunkter och sträckor ---------------------------------------------------
   const key = new Set();
-  for (const { seq } of paths) {
-    key.add(seq[0]);
-    key.add(seq[seq.length - 1]);
-  }
   for (const [n, nb] of adj) {
     if (nb.size !== 2) key.add(n);
     else {
@@ -125,7 +153,8 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
         cur = next;
       }
       nodes.push(cur);
-      chains.push({ nodes, routes: [...edges.get(ekey(nodes[0], nodes[1])).routes].sort((x, y) => x - y) });
+      const e = edges.get(ekey(nodes[0], nodes[1]));
+      chains.push({ nodes, routes: [...e.routes].sort((x, y) => x - y), alt: new Set(e.alt) });
     }
   };
   for (const k of key) walkFrom(k);
@@ -149,7 +178,11 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     return [x * f, y * f];
   };
   const dpos = new Map(nodesUsed.map((g) => [g, distorted(g)]));
+  // Alternativa färdvägar får inte påverka huvudnätets form: de läggs in efteråt där det
+  // finns plats, eftersom de bara visas när linjen är vald.
+  const isMain = (c) => c.routes.some((ri) => !c.alt.has(ri));
   const ratios = chains
+    .filter(isMain)
     .map((c) => {
       const [a, b] = [dpos.get(c.nodes[0]), dpos.get(c.nodes[c.nodes.length - 1])];
       const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -184,12 +217,15 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
   };
   // Knuffa isär knutpunkter som ligger för tätt för sina hållplatser, men håll dem
   // nära sitt geografiska läge.
-  const keys = [...key];
+  const onMain = new Set(chains.filter(isMain).flatMap((c) => c.nodes));
+  const keys = [...key].filter((g) => onMain.has(g));
+  const altKeys = [...key].filter((g) => !onMain.has(g));
   const relaxed = new Map(keys.map((g) => [g, target(g)]));
   const springs = chains
-    .filter((c) => c.nodes[0] !== c.nodes[c.nodes.length - 1])
+    .filter((c) => isMain(c) && c.nodes[0] !== c.nodes[c.nodes.length - 1])
     .map((c) => [c.nodes[0], c.nodes[c.nodes.length - 1], (c.nodes.length - 1) * spacing]);
   const minGap = grid * 4;
+  let near = [];
   for (let it = 0; it < 600; it++) {
     const force = new Map(keys.map((g) => [g, [0, 0]]));
     const push = (a, b, want, k) => {
@@ -203,11 +239,21 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
       force.get(b)[0] += dx * f; force.get(b)[1] += dy * f;
     };
     for (const [a, b, want] of springs) push(a, b, want, 0.25);
-    for (let i = 0; i < keys.length; i++) {
-      for (let j = i + 1; j < keys.length; j++) push(keys[i], keys[j], linked.has(ekey(keys[i], keys[j])) ? grid * 2 : minGap, 0.25);
+    // Par som ligger nära varandra; listan förnyas då och då eftersom lägena rör sig långsamt.
+    if (it % 20 === 0) {
+      near = [];
+      for (let i = 0; i < keys.length; i++) {
+        const pi = relaxed.get(keys[i]);
+        for (let j = i + 1; j < keys.length; j++) {
+          const pj = relaxed.get(keys[j]);
+          if (Math.abs(pi[0] - pj[0]) < minGap * 3 && Math.abs(pi[1] - pj[1]) < minGap * 3) near.push([keys[i], keys[j], linked.has(ekey(keys[i], keys[j])) ? grid * 2 : minGap]);
+        }
+      }
     }
+    for (const [a, b, want] of near) push(a, b, want, 0.25);
     // Gångvägarna drar ihop sina hållplatser.
     for (const [a, b] of links) {
+      if (!onMain.has(a) || !onMain.has(b)) continue;
       const pa = relaxed.get(a), pb = relaxed.get(b);
       const dx = pb[0] - pa[0], dy = pb[1] - pa[1];
       const d = Math.hypot(dx, dy);
@@ -222,6 +268,13 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
       p[1] += f[1] + (t[1] - p[1]) * 0.008;
     }
   }
+  // Alternativa knutpunkter flyttas lika mycket som närmaste knutpunkt i huvudnätet.
+  for (const g of altKeys) {
+    const near = keys.reduce((best, o) => (best == null || dist(g, o) < dist(g, best) ? o : best), null);
+    const t = target(g);
+    const d = near == null ? [0, 0] : [relaxed.get(near)[0] - target(near)[0], relaxed.get(near)[1] - target(near)[1]];
+    relaxed.set(g, [t[0] + d[0], t[1] + d[1]]);
+  }
   const shift = (g) => {
     const p = relaxed.get(g), t = target(g);
     return [p[0] - t[0], p[1] - t[1]];
@@ -235,7 +288,7 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     partners.get(a).push(b);
     partners.get(b).push(a);
   }
-  keys.sort((a, b) => groups[b].routes.size - groups[a].routes.size).forEach((g) => {
+  [...keys.sort((a, b) => groups[b].routes.size - groups[a].routes.size), ...altKeys].forEach((g) => {
     const near = (partners.get(g) || []).find((o) => pos.has(o));
     if (near == null) return place(g, relaxed.get(g));
     const [pp, rg, ro] = [pos.get(near), relaxed.get(g), relaxed.get(near)];
@@ -244,7 +297,8 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
   });
 
   // --- Sträckornas form ---------------------------------------------------------------
-  for (const c of chains) {
+  const drawn = [];
+  for (const c of [...chains].sort((x, y) => isMain(y) - isMain(x))) {
     const n = c.nodes.length;
     const pins = [0];
     const loop = c.nodes[0] === c.nodes[n - 1];
@@ -263,9 +317,13 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     for (let j = 1; j < pins.length; j++) {
       const [ia, ib] = [pins[j - 1], pins[j]];
       const hint = target(c.nodes[Math.round((ia + ib) / 2)]);
-      line.push(...octilinear(pinPos[j - 1], pinPos[j], hint).slice(1));
+      // Böjen läggs så att sträckan inte ritas ovanpå en annan sträcka.
+      const ways = octilinear(pinPos[j - 1], pinPos[j], hint);
+      const best = ways.reduce((x, y) => (overlap(y, drawn) < overlap(x, drawn) - 1 ? y : x));
+      line.push(...best.slice(1));
     }
     c.line = dedupePts(line);
+    for (let i = 1; i < c.line.length; i++) drawn.push([c.line[i - 1], c.line[i]]);
     // Hållplatserna fördelas jämnt längs hela sträckan; mellanpunkterna formar bara linjen.
     c.nodePos = c.nodes.map((_, i) => along(c.line, i / (n - 1)));
     for (let i = 1; i < n - 1; i++) if (!key.has(c.nodes[i])) pos.set(c.nodes[i], c.nodePos[i]);
@@ -274,18 +332,139 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
   return { chains, pos, key, center, routes: routeIdx, links };
 }
 
-// Två raka delar, en diagonal och en rak, mellan p och q. Böjen läggs på den sida
-// som ligger närmast hållplatsernas verkliga läge.
+// Hållplatser på linjen som turen kör förbi utan att stanna, enligt bussens väg (formen i
+// tidtabellen). De läggs in i turen, så att t.ex. Kilgatan och Cisternvägen, som ligger
+// på samma gata men används åt var sitt håll, ritas efter varandra i stället för som en slinga.
+function passedOnRoad(seqs, groups) {
+  const cands = [...new Set(seqs.flatMap((v) => v.seq))];
+  const near = 25, clear = 60; // meter
+  return seqs.map((v) => {
+    const path = v.path;
+    if (!path || path.length < 2) return v;
+    const lat0 = groups[v.seq[0]].lat;
+    const cx = Math.cos((lat0 * Math.PI) / 180) * 111320, cy = 110570;
+    const pts = path.map(([lon, lat]) => [lon * cx, lat * cy]);
+    const xy = (g) => [groups[g].lon * cx, groups[g].lat * cy];
+    const segD = (p, i) => {
+      const [a, b] = [pts[i - 1], pts[i]];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+      return Math.hypot(a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+    };
+    // Turens hållplatser längs vägen, i ordning.
+    const at = [];
+    let from = 1;
+    for (const g of v.seq) {
+      const p = xy(g);
+      let best = [Infinity, from];
+      for (let i = from; i < pts.length; i++) {
+        const d = segD(p, i);
+        if (d < best[0] - 1) best = [d, i];
+        if (best[0] < 15 && i > best[1] + 40) break;
+      }
+      at.push(best[1]);
+      from = best[1];
+    }
+    // Var vägen går nära linjens övriga hållplatser. Vägens delar sorteras i rutor så att
+    // varje hållplats bara jämförs med delarna i sin närhet.
+    const cell = 100;
+    const cells = new Map();
+    for (let i = 1; i < pts.length; i++) {
+      const [a, b] = [pts[i - 1], pts[i]];
+      for (let x = Math.floor((Math.min(a[0], b[0]) - near) / cell); x <= Math.floor((Math.max(a[0], b[0]) + near) / cell); x++)
+        for (let y = Math.floor((Math.min(a[1], b[1]) - near) / cell); y <= Math.floor((Math.max(a[1], b[1]) + near) / cell); y++) {
+          const k = `${x},${y}`;
+          if (!cells.has(k)) cells.set(k, []);
+          cells.get(k).push(i);
+        }
+    }
+    const hits = cands.map((g) => {
+      const p = xy(g);
+      const list = (cells.get(`${Math.floor(p[0] / cell)},${Math.floor(p[1] / cell)}`) || []).filter((i) => segD(p, i) < near);
+      return [g, p, list.sort((x, y) => x - y)];
+    }).filter(([, , list]) => list.length);
+    const out = [v.seq[0]];
+    for (let j = 1; j < v.seq.length; j++) {
+      const [a, b] = [xy(v.seq[j - 1]), xy(v.seq[j])];
+      const lo = at[j - 1], hi = at[j];
+      const win = v.seq.slice(Math.max(0, j - 2), j + 2);
+      const passed = hi > lo
+        ? hits
+            .map(([g, p, list]) => [g, p, list.find((i) => i > lo && i < hi)])
+            .filter(([g, p, i]) => i != null && !win.includes(g) && Math.hypot(p[0] - a[0], p[1] - a[1]) > clear && Math.hypot(p[0] - b[0], p[1] - b[1]) > clear)
+            .sort((x, y) => x[2] - y[2])
+        : [];
+      for (const [g] of passed) if (out[out.length - 1] !== g) out.push(g);
+      out.push(v.seq[j]);
+    }
+    return { ...v, seq: out };
+  });
+}
+
+// En tur som kör förbi en hållplats utan att stanna där, men som linjen annars stannar
+// vid, dras via den hållplatsen. Annars ser det ut som att turen genar, t.ex. linje 407
+// som vänder vid Aspgatan och passerar Hörnettrondellen åt båda hållen.
+function viaPassedStops(seqs, dist, ekey) {
+  const nb = new Map();
+  const add = (a, b) => (nb.has(a) ? nb.get(a) : nb.set(a, new Set()).get(a)).add(b);
+  for (const { seq } of seqs) for (let i = 1; i < seq.length; i++) (add(seq[i - 1], seq[i]), add(seq[i], seq[i - 1]));
+  const via = new Map();
+  const viaOf = (a, b) => {
+    const k = ekey(a, b);
+    if (!via.has(k)) {
+      const d = dist(a, b);
+      let best = null;
+      for (const z of nb.get(a)) {
+        if (z === b || !nb.get(b).has(z)) continue;
+        const dz = dist(a, z) + dist(z, b);
+        if (dz <= d * 1.25 && (!best || dz < best[1])) best = [z, dz];
+      }
+      via.set(k, best?.[0] ?? null);
+    }
+    return via.get(k);
+  };
+  return seqs.map(({ seq, trips }) => {
+    const out = [seq[0]];
+    for (let i = 1; i < seq.length; i++) {
+      const z = viaOf(seq[i - 1], seq[i]);
+      if (z != null && !seq.slice(Math.max(0, i - 2), i + 2).includes(z)) out.push(z);
+      out.push(seq[i]);
+    }
+    return { seq: out, trips };
+  });
+}
+
+// Två raka delar, en diagonal och en rak, mellan p och q. Ger båda sätten att lägga
+// böjen, det som ligger närmast hållplatsernas verkliga läge först.
 function octilinear(p, q, hint) {
   const dx = q[0] - p[0], dy = q[1] - p[1];
   const adx = Math.abs(dx), ady = Math.abs(dy);
-  if (adx === 0 || ady === 0 || adx === ady) return [p, q];
+  if (adx === 0 || ady === 0 || adx === ady) return [[p, q]];
   const d = Math.min(adx, ady), sx = Math.sign(dx), sy = Math.sign(dy);
   const a = [p[0] + sx * d, p[1] + sy * d];
   const b = [q[0] - sx * d, q[1] - sy * d];
   const da = Math.hypot(a[0] - hint[0], a[1] - hint[1]);
   const db = Math.hypot(b[0] - hint[0], b[1] - hint[1]);
-  return [p, da <= db ? a : b, q];
+  return da <= db ? [[p, a, q], [p, b, q]] : [[p, b, q], [p, a, q]];
+}
+
+// Hur lång bit av linjen som ligger ovanpå redan ritade delar (samma riktning, samma läge).
+function overlap(line, segs) {
+  let sum = 0;
+  for (let i = 1; i < line.length; i++) {
+    const [a, b] = [line[i - 1], line[i]];
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const l = Math.hypot(dx, dy);
+    if (!l) continue;
+    const [ux, uy] = [dx / l, dy / l];
+    for (const [c, d] of segs) {
+      const off = (p) => Math.abs((p[0] - a[0]) * uy - (p[1] - a[1]) * ux);
+      if (off(c) > 2 || off(d) > 2) continue;
+      const tc = (c[0] - a[0]) * ux + (c[1] - a[1]) * uy, td = (d[0] - a[0]) * ux + (d[1] - a[1]) * uy;
+      sum += Math.max(0, Math.min(l, Math.max(tc, td)) - Math.max(0, Math.min(tc, td)));
+    }
+  }
+  return sum;
 }
 
 function along(line, t) {
@@ -361,6 +540,9 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   view.append(extraG, linesG, stopsG, labelsG, busesG);
 
   const step = LW + GAP;
+  // Tunna, streckade linjer: skol- och specialturer och alternativa färdvägar.
+  const thin = (c, ri) => extra.has(ri) || c.alt?.has(ri);
+  const mainsOf = (c) => c.routes.filter((ri) => !thin(c, ri));
   let geoOf = geo || defaultGeo(groups, layout);
   let t = mode;
   let k = 1;
@@ -383,17 +565,18 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   const lerp = (a, b, s) => [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s];
 
   const bundle = new Map();
+  const solid = new Set(); // hållplatser på någon linjes huvudfärdväg
   const slots = new Map(); // sträcka -> linje -> läge i knippet
   const routePaths = [];
   for (const c of layout.chains) {
-    const mains = c.routes.filter((ri) => !extra.has(ri));
-    const extras = c.routes.filter((ri) => extra.has(ri));
+    const mains = mainsOf(c);
+    const extras = c.routes.filter((ri) => thin(c, ri));
     const kk = mains.length;
     const add = (ri, slot, isExtra) => {
-      const path = el("path", { class: isExtra ? "route extra" : "route", stroke: net.routes[ri].c, "data-route": ri });
+      const path = el("path", { class: isExtra ? `route extra${c.alt?.has(ri) ? " alt" : ""}` : "route", stroke: net.routes[ri].c, "data-route": ri });
       path.addEventListener("click", () => onRoute?.(ri));
       (isExtra ? extraG : linesG).append(path);
-      routePaths.push({ el: path, c, slot, isExtra });
+      routePaths.push({ el: path, c, ri, slot, isExtra });
       if (!slots.has(c)) slots.set(c, new Map());
       slots.get(c).set(ri, slot);
     };
@@ -401,29 +584,33 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     // Övriga turer läggs utanför de vanliga linjerna, eller i mitten om de är ensamma.
     extras.forEach((ri, j) => add(ri, kk ? kk / 2 + 0.2 + j * 0.6 : (j - (extras.length - 1) / 2) * 0.6, true));
     for (const g of c.nodes) bundle.set(g, Math.max(bundle.get(g) || 0, Math.max(kk, 1)));
+    if (c.routes.some((ri) => !c.alt?.has(ri))) c.nodes.forEach((g) => solid.add(g));
   }
 
   // Hållplatser: vanliga som smala markeringar tvärs över linjerna, knutpunkter som ringar.
   const stations = [];
   const placed = new Set();
   for (const c of layout.chains) {
-    const w = Math.max(1, c.routes.filter((ri) => !extra.has(ri)).length) * step + 2.5;
+    const w = Math.max(1, mainsOf(c).length) * step + 2.5;
+    const minor = !c.routes.some((ri) => !c.alt?.has(ri));
     for (let i = 1; i < c.nodes.length - 1; i++) {
       const g = c.nodes[i];
       if (layout.key.has(g) || placed.has(g)) continue;
       placed.add(g);
-      const mark = el("rect", { class: "station tick" });
+      const mark = el("rect", { class: minor ? "station tick alt" : "station tick" });
       hook(mark, g);
       stopsG.append(mark);
-      stations.push({ el: mark, g, c, i, w, trunk: c.routes.filter((ri) => !extra.has(ri)).length >= 5 });
+      stations.push({ el: mark, g, c, i, w, minor, trunk: mainsOf(c).length >= 5 });
     }
   }
   for (const g of layout.key) {
     const r = Math.min(6.5, Math.max(4.5, ((bundle.get(g) || 1) * step) / 2 + 1.5));
-    const mark = el("circle", { class: "station key" });
+    // Knutpunkter som bara ligger på alternativa färdvägar ritas mindre.
+    const minor = !solid.has(g);
+    const mark = el("circle", { class: minor ? "station key alt" : "station key" });
     hook(mark, g);
     stopsG.append(mark);
-    stations.push({ el: mark, g, r });
+    stations.push({ el: mark, g, r: minor ? 3.6 : r, minor });
   }
   // Gångvägar mellan närliggande hållplatser, under hållplatsringarna.
   const walks = (layout.links || []).map(([a, b]) => {
@@ -431,7 +618,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     const outer = el("line", { class: "walk-o" }), inner = el("line", { class: "walk-i" });
     g.append(outer, inner);
     stopsG.prepend(g);
-    return { a, b, lines: [outer, inner] };
+    return { a, b, g, lines: [outer, inner] };
   });
   const marker = el("circle", { class: "picked", visibility: "hidden" });
   stopsG.append(marker);
@@ -464,7 +651,9 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     const dense = !pz || k < pz.fitScale() * 1.8;
     const pts = new Map(layout.chains.map((c) => [c, c.verts.map((v) => lerp(geoVert(c, v), v.schem, t))]));
     lastPts = pts;
-    for (const { el: path, c, slot, isExtra } of routePaths) {
+    for (const { el: path, c, ri, slot, isExtra } of routePaths) {
+      // Alternativa färdvägar visas bara för den valda linjen.
+      path.style.display = c.alt?.has(ri) && ri !== selRoute ? "none" : "";
       const line = offsetLine(dedupePts(pts.get(c)), slot * step * f);
       path.setAttribute("d", `M${line.map((p) => p.map((v) => v.toFixed(2)).join(" ")).join("L")}`);
       path.style.strokeWidth = `${(isExtra ? LW * 0.45 : LW) * f}px`;
@@ -472,14 +661,16 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     }
     for (const st of stations) {
       st.el.style.strokeWidth = `${(st.r ? 1.8 : 1.1) * f}px`;
+      st.off = st.minor && !(st.c ? st.c.routes.includes(selRoute) : groups[st.g].routes.has(selRoute));
       if (st.r) {
+        st.el.style.display = st.off ? "none" : "";
         const p = nodeAt(st.g);
         st.el.setAttribute("cx", p[0]);
         st.el.setAttribute("cy", p[1]);
         st.el.setAttribute("r", st.r * f);
         continue;
       }
-      st.el.style.display = st.trunk && dense ? "none" : "";
+      st.el.style.display = st.off || (st.trunk && dense) ? "none" : "";
       const line = pts.get(st.c);
       const p = line[st.c.verts.findIndex((v) => Math.abs(v.idx - st.i) < 1e-9)];
       const dir = segDir(line, p);
@@ -493,7 +684,9 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       st.p = p;
       st.dir = dir;
     }
-    for (const { a, b, lines } of walks) {
+    const off = new Set(stations.filter((st) => st.off).map((st) => st.g));
+    for (const { a, b, g, lines } of walks) {
+      g.style.display = off.has(a) || off.has(b) ? "none" : "";
       const [pa, pb] = [nodeAt(a), nodeAt(b)];
       lines.forEach((ln, i) => {
         ln.setAttribute("x1", pa[0]); ln.setAttribute("y1", pa[1]);
@@ -521,8 +714,9 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     const schem = t > 0.5;
     if (schem) items.push(...terminusBadges());
     for (const st of stations) {
+      if (st.off) continue;
       const g = st.g;
-      const major = !!st.r;
+      const major = !!st.r && !st.minor;
       const p = st.r ? nodeAt(g) : st.p;
       let dir = [0, 1];
       if (schem) {
@@ -535,7 +729,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       let nx = -dir[1], ny = dir[0];
       if (nx < 0 || (nx === 0 && ny > 0)) [nx, ny] = [-nx, -ny];
       const pad = st.r || st.w / 2;
-      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, slant: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size, minK: major ? 0 : Math.max(MIN_K_MINOR, st.trunk ? pz.fitScale() * 1.8 : 0) });
+      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, slant: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size, minK: major ? 0 : Math.max(MIN_K_MINOR, st.trunk || st.minor ? pz.fitScale() * 1.8 : 0) });
     }
     names = labelLayer(labelsG, items, obstacles);
     names.update(k);
@@ -545,6 +739,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   function terminusBadges() {
     const ends = new Map();
     for (const c of layout.chains) {
+      if (!mainsOf(c).length) continue;
       for (const [g, atStart] of [[c.nodes[0], true], [c.nodes[c.nodes.length - 1], false]]) {
         if (!ends.has(g)) ends.set(g, []);
         ends.get(g).push({ c, atStart });
@@ -554,7 +749,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     for (const [g, list] of ends) {
       if (list.length !== 1) continue;
       const { c, atStart } = list[0];
-      const routes = c.routes.filter((ri) => !extra.has(ri));
+      const routes = mainsOf(c);
       if (!routes.length || c.line.length < 2) continue;
       const L = c.line;
       const [a, b] = atStart ? [L[1], L[0]] : [L[L.length - 2], L[L.length - 1]];
@@ -570,8 +765,8 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     const f = sizeFactor(k);
     for (const c of layout.chains) {
       const line = lastPts.get(c);
-      if (!line) continue;
-      const kk = Math.max(1, c.routes.filter((ri) => !extra.has(ri)).length);
+      if (!line || !c.routes.some((ri) => !c.alt?.has(ri) || ri === selRoute)) continue;
+      const kk = Math.max(1, mainsOf(c).length);
       const hw = ((kk * step) / 2) * f * k;
       sampleLine(line.map((p) => [p[0] * k, p[1] * k]), Math.max(3, hw), hw, add);
     }
@@ -593,7 +788,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     let best = null;
     for (const c of layout.chains) {
       const slot = slots.get(c)?.get(v.ri);
-      if (slot == null) continue;
+      if (slot == null || (c.alt?.has(v.ri) && v.ri !== selRoute)) continue;
       for (let i = 1; i < c.nodes.length; i++) {
         const A = groups[c.nodes[i - 1]], B = groups[c.nodes[i]];
         const ax = A.lon * cos, ay = A.lat, dx = B.lon * cos - ax, dy = B.lat - ay;
@@ -682,7 +877,12 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     },
     setVehicles,
     select(ri) {
+      const changed = selRoute !== ri;
       selRoute = ri;
+      if (changed) {
+        draw();
+        buildLabels();
+      }
       for (const b of buses.values()) b.el.classList.toggle("dim", ri != null && ri !== b.v.ri);
       svg.classList.toggle("has-sel", ri != null);
       for (const g of [extraG, linesG]) {
