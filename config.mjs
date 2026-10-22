@@ -21,6 +21,10 @@ export const KIND_OVERRIDES = {};
 // Toleransen när linjeformer förenklas, i meter. Högre = färre punkter.
 export const SIMPLIFY_METERS = 4;
 
+// Vägnavigering (OSRM) för raka etapper i Din Turs former som ingen annan tur
+// kör längs vägen. Några få frågor per bygge; tom sträng stänger av.
+export const ROAD_ROUTER = "https://router.project-osrm.org";
+
 // Hur många dagar framåt tidtabellen byggs.
 export const DAYS_AHEAD = 8;
 

@@ -3,6 +3,7 @@
 //   TRAFIKLAB_STATIC_KEY=... node scripts/build-data.mjs
 //   node scripts/build-data.mjs --zip path/till/dintur.zip
 //   node scripts/build-data.mjs --dir test/fixture   (uppackad GTFS, för test)
+//   --no-router   slå inte upp raka etapper i vägnavigeringen (utan nätverk)
 //
 // Skriver public/data/network.json (hållplatser och linjeformer) och
 // public/data/days/ÅÅÅÅ-MM-DD.json (dagens turer med tider). Sidan räknar fram
@@ -15,6 +16,7 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync } from "nod
 import { unzipSync, strFromU8 } from "fflate";
 import * as cfg from "../config.mjs";
 import { eachRow, parseTime, inBox, simplify, dedupe } from "./lib/gtfs.mjs";
+import { repairStraightLegs, osrmRoute } from "./lib/legs.mjs";
 
 const args = process.argv.slice(2);
 const arg = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
@@ -164,6 +166,16 @@ const networkRoutes = routeList.map(({ route, variants }, ri) => {
     }),
   };
 });
+
+// Former som genar i raka streck mellan hållplatser får vägen från andra turer,
+// eller från vägnavigeringen när ingen tur kör där.
+const osrm = args.includes("--no-router") || !cfg.ROAD_ROUTER ? null : osrmRoute(cfg.ROAD_ROUTER);
+const legs = await repairStraightLegs(networkRoutes, stopList.map((s) => [s.lon, s.lat]),
+  osrm && (async (a, b) => {
+    const pts = await osrm(a, b);
+    return pts && simplify(dedupe(pts), cfg.SIMPLIFY_METERS);
+  }));
+console.log(`Raka etapper: ${legs.fixed} från andra turer, ${legs.routed} från vägnavigering, ${legs.left} kvar`);
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(`${outDir}/days`, { recursive: true });
