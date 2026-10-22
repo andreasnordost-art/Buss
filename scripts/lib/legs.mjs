@@ -7,6 +7,10 @@
 // hållplatser, från vilken linje som helst. Expressturer som hoppar över hållplatser
 // får på så vis vägen via de hållplatser de passerar. Etapper som ingen tur kör längs
 // vägen kan till sist slås upp i en vägnavigering (route), om bygget har en.
+//
+// Etapper som följer vägen men ritats lite olika av olika turer (eller slarvigt, med
+// ändar en bit från hållplatsen) byts mot den form som flest turer kör, så att samma
+// sträcka ritas som ett streck i stället för flera nästan likadana.
 
 const RAD = Math.PI / 180;
 const KX = 111320 * Math.cos(63.3 * RAD); // meter per längdgrad kring Örnsköldsvik
@@ -25,10 +29,14 @@ const DETOUR_EXTRA = 400;
 // en lång omväg via en motorvägsramp åt fel håll.
 const ROUTED_FACTOR = 2;
 const ROUTED_EXTRA = 500;
+// Två former för samma etapp räknas som samma väg om de aldrig skiljer mer än så här.
+const SAME_ROAD_METERS = 50;
+// En etapp vars ände ligger längre än så här från hållplatsen är slarvigt ritad.
+const LOOSE_END_METERS = 30;
 
 // routes: [{ variants: [{ path: [[lon, lat]], stops: [stopIndex] }] }]
 // coords: stopIndex -> [lon, lat]. route(a, b): [[lon, lat]] längs vägen eller null.
-// Ändrar path på plats och returnerar { fixed, routed, left, legs: [[a, b, hur]] }.
+// Ändrar path på plats och returnerar { fixed, routed, left, aligned, legs: [[a, b, hur]] }.
 export async function repairStraightLegs(routes, coords, route = null) {
   const variants = routes.flatMap((r) => r.variants).filter((v) => v.stops.length >= 2 && v.path.length >= 2);
   const split = variants.map((v) => splitLegs(v.path, v.stops.map((s) => coords[s])));
@@ -41,16 +49,31 @@ export async function repairStraightLegs(routes, coords, route = null) {
     const old = m.get(b);
     if (!old || len < old.len) m.set(b, { len, pts });
   };
+  // Den form flest turer kör för varje hållplatspar, oavsett riktning.
+  const common = new Map(); // "a>b" -> { pts, trips, loose }
   variants.forEach((v, vi) => {
     split[vi].legs.forEach((leg, i) => {
       const a = v.stops[i], b = v.stops[i + 1];
       if (a === b || leg.straight || !plausible(leg, coords[a], coords[b])) return;
       addEdge(a, b, leg.pts, leg.len);
       addEdge(b, a, leg.pts.slice().reverse(), leg.len);
+      const trips = v.trips || 1;
+      const loose = looseEnds(leg, coords[a], coords[b]);
+      for (const [k, pts] of [[`${a}>${b}`, leg.pts], [`${b}>${a}`, leg.pts.slice().reverse()]]) {
+        const old = common.get(k);
+        // Slarviga former tas bara när inget annat finns.
+        if (!old || old.loose > loose || (old.loose === loose && trips > old.trips)) common.set(k, { pts, trips, loose });
+      }
     });
   });
 
   const chain = (leg, a, b) => (leg.len >= CHAIN_MIN_METERS ? roadBetween(edges, a, b, dist(coords[a], coords[b])) : null);
+
+  // Formen en vägföljande etapp ritas med: den vanligaste om den är samma väg, annars sin egen.
+  const shape = (leg, a, b) => {
+    const best = common.get(`${a}>${b}`);
+    return best && best.pts !== leg.pts && !best.loose && sameRoad(leg.pts, best.pts) ? best.pts : leg.pts;
+  };
 
   // Raka etapper utan vägföljande kedja slås upp en gång per hållplatspar.
   const routed = new Map();
@@ -68,26 +91,60 @@ export async function repairStraightLegs(routes, coords, route = null) {
     }
   }
 
-  const count = { fixed: 0, routed: 0, left: 0, legs: [] };
+  const count = { fixed: 0, routed: 0, left: 0, aligned: 0, legs: [] };
   variants.forEach((v, vi) => {
     const { head, legs, tail } = split[vi];
-    if (!legs.some((l) => l.straight)) return;
+    let changed = false;
     const out = [...head];
     legs.forEach((leg, i) => {
       const a = v.stops[i], b = v.stops[i + 1];
       let road = null;
-      if (leg.straight && a !== b) {
+      if (a === b) {
+        // Samma hållplats två gånger i rad: inget att rätta.
+      } else if (leg.straight) {
         road = chain(leg, a, b);
         const how = road ? "fixed" : (road = routed.get(`${a}>${b}`)) ? "routed" : "left";
         count[how]++;
         count.legs.push([a, b, how]);
+      } else {
+        const pts = shape(leg, a, b);
+        if (pts !== leg.pts) {
+          road = pts;
+          count.aligned++;
+        }
       }
+      if (road) changed = true;
       append(out, road || leg.pts);
     });
+    if (!changed) return;
     append(out, tail);
     v.path = out.map(([lon, lat]) => [round(lon), round(lat)]);
   });
   return count;
+}
+
+const looseEnds = (leg, a, b) => dist(leg.pts[0], a) > LOOSE_END_METERS || dist(leg.pts[leg.pts.length - 1], b) > LOOSE_END_METERS;
+
+// Följer två former samma väg? Varje punkt (var 25:e meter) ska ligga nära den andra formen.
+function sameRoad(p, q) {
+  const near = (from, to) => densify(from).every((pt) => toLine(pt, to) <= SAME_ROAD_METERS);
+  return near(p, q) && near(q, p);
+}
+
+function densify(pts) {
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const n = Math.ceil(dist(pts[i - 1], pts[i]) / 25);
+    for (let k = 1; k <= n; k++) out.push([pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * k / n, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * k / n]);
+  }
+  return out;
+}
+
+function toLine(p, pts) {
+  const xy = toXY(p);
+  let best = Infinity;
+  for (let i = 0; i + 1 < pts.length; i++) best = Math.min(best, onSegment(xy, toXY(pts[i]), toXY(pts[i + 1]), 0)[1]);
+  return pts.length === 1 ? dist(p, pts[0]) : best;
 }
 
 const length = (pts) => pts.reduce((sum, p, i) => sum + (i ? dist(pts[i - 1], p) : 0), 0);
@@ -138,9 +195,11 @@ function project(xy, p, from) {
   if (!best) return { seg: Math.max(0, xy.length - 2), t: 1, d: Infinity };
   if (!hits.length) return best;
   // Första passagen inom 40 m, men dess närmaste punkt (inte första segmentet som nuddar).
+  // Passagen tar slut där formen lämnar hållplatsen, t.ex. för en sväng ut och tillbaka.
   let first = hits[0];
-  for (const h of hits) {
-    if (h.seg > first.seg + 1) break;
+  for (let k = 1; k < hits.length; k++) {
+    const h = hits[k];
+    if (h.seg !== hits[k - 1].seg + 1 || Math.hypot(xy[h.seg][0] - p[0], xy[h.seg][1] - p[1]) >= 40) break;
     if (h.d < first.d) first = h;
   }
   return first;

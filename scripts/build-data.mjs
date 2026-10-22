@@ -175,7 +175,7 @@ const legs = await repairStraightLegs(networkRoutes, stopList.map((s) => [s.lon,
     const pts = await osrm(a, b);
     return pts && simplify(dedupe(pts), cfg.SIMPLIFY_METERS);
   }));
-console.log(`Raka etapper: ${legs.fixed} från andra turer, ${legs.routed} från vägnavigering, ${legs.left} kvar`);
+console.log(`Raka etapper: ${legs.fixed} från andra turer, ${legs.routed} från vägnavigering, ${legs.left} kvar; ${legs.aligned} med samma form som andra turer`);
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(`${outDir}/days`, { recursive: true });
