@@ -375,11 +375,15 @@ function initMap() {
   map.on("style.load", addLayers);
   map.once("load", () => fitKind());
   map.on("dragstart", () => state.follow && setFollow(false));
+  // Utzoomat blir bussarna små skyltar med bara linjenumret.
+  const far = () => map.getContainer().classList.toggle("far", map.getZoom() < 13);
+  map.on("zoom", far);
+  far();
   map.on("error", (e) => {
     // Saknas en stil faller vi tillbaka på den ljusa.
     if (String(e?.error?.message || "").includes("styles/") && state.style !== "light") setStyle("light");
   });
-  const STOP_LAYERS = ["stops", "stop-hubs", "route-stops", "stop-names", "hub-names", "route-stop-names"];
+  const STOP_LAYERS = ["stops", "stop-hubs", "route-stops", "stop-names", "big-names", "hub-names", "route-stop-names"];
   for (const l of [...STOP_LAYERS, "route-line", "route-extra", "route-badges"]) {
     map.on("mouseenter", l, () => (map.getCanvas().style.cursor = "pointer"));
     map.on("mouseleave", l, () => (map.getCanvas().style.cursor = ""));
@@ -463,8 +467,9 @@ function addLayers() {
   map.addLayer({ id: "journey-left", type: "line", source: "journey", filter: ["==", ["get", "part"], "left"],
     layout: round, paint: { "line-color": ["get", "c"], "line-width": width(5, 9) } }, below);
   // Linjenummer längs linjerna, som små skyltar i linjens färg.
-  map.addLayer({ id: "route-badges", type: "symbol", source: "routes", minzoom: 9.5, filter: ["==", ["get", "r"], -1],
-    layout: { "symbol-placement": "line", "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 11, 260, 16, 480], "icon-image": ["concat", "line-", ["get", "name"]], "icon-rotation-alignment": "viewport", "icon-padding": 6, "symbol-sort-key": ["get", "rank"] } });
+  // Linjenummer längs linjerna först när man zoomat in; utzoomat räcker linjeraden.
+  map.addLayer({ id: "route-badges", type: "symbol", source: "routes", minzoom: 12.5, filter: ["==", ["get", "r"], -1],
+    layout: { "symbol-placement": "line", "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 12.5, 520, 16, 900], "icon-image": ["concat", "line-", ["get", "name"]], "icon-rotation-alignment": "viewport", "icon-padding": 6, "symbol-sort-key": ["get", "rank"] } });
   map.addLayer({ id: "journey-stops", type: "circle", source: "journey", filter: ["==", ["get", "part"], "stop"],
     paint: { "circle-radius": zoomed([[11, 3.5], [16, 6]]), "circle-color": casing, "circle-stroke-color": ["get", "c"], "circle-stroke-width": 2.5 } });
   // Hållplatser: knutpunkter syns tidigt och större, övriga när man zoomat in.
@@ -483,7 +488,9 @@ function addLayers() {
   });
   const labelPaint = { "text-color": ink, "text-halo-color": casing, "text-halo-width": 1.8, "text-halo-blur": 0.3 };
   map.addLayer({ id: "stop-names", type: "symbol", source: "stops", minzoom: 14.5, filter: ["!", ["get", "hub"]], layout: label("Noto Sans Regular", zoomed([[14.5, 11.5], [17, 13.5]])), paint: labelPaint });
-  map.addLayer({ id: "hub-names", type: "symbol", source: "stops", minzoom: 11, filter: ["get", "hub"], layout: label("Noto Sans Bold", zoomed([[11, 11.5], [16, 14.5]])), paint: labelPaint });
+  // Utzoomat visas bara de största knutpunkternas namn.
+  map.addLayer({ id: "big-names", type: "symbol", source: "stops", minzoom: 11, maxzoom: 13, filter: ["get", "big"], layout: label("Noto Sans Bold", zoomed([[11, 11.5], [13, 12.5]])), paint: labelPaint });
+  map.addLayer({ id: "hub-names", type: "symbol", source: "stops", minzoom: 13, filter: ["get", "hub"], layout: label("Noto Sans Bold", zoomed([[13, 12.5], [16, 14.5]])), paint: labelPaint });
   map.addLayer({ id: "route-stop-names", type: "symbol", source: "stops", minzoom: 12, filter: ["==", ["get", "g"], -1], layout: label("Noto Sans Bold", zoomed([[12, 11.5], [16, 13.5]])), paint: labelPaint });
   map.addLayer({ id: "stop-label", type: "symbol", source: "stops", filter: ["==", ["get", "g"], -1],
     layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Bold"], "text-size": 15, "text-offset": [0, 1.4], "text-anchor": "top", "text-allow-overlap": true },
@@ -546,7 +553,7 @@ function stopGeoJSON() {
       return {
         type: "Feature",
         properties: {
-          g: gi, name: shortName(g.name), n, hub: n >= 3,
+          g: gi, name: shortName(g.name), n, hub: n >= 3, big: n >= 5,
           rs: `,${routes.join(",")},`,
           kinds: [...new Set(routes.map((r) => net.routes[r].kind))].join(","),
           extraOnly: routes.every((r) => net.routes[r].tier === "extra"),
@@ -582,6 +589,7 @@ function applyMapFilters() {
   map.setFilter("stop-hubs", ["all", stopFilter, ["get", "hub"]]);
   map.setFilter("stop-names", ["all", stopFilter, ["!", ["get", "hub"]]]);
   map.setFilter("hub-names", ["all", stopFilter, ["get", "hub"]]);
+  map.setFilter("big-names", ["all", stopFilter, ["get", "big"]]);
   const onRoute = state.route != null ? ["in", `,${state.route},`, ["get", "rs"]] : false;
   map.setFilter("route-stops", onRoute || ["==", ["get", "g"], -1]);
   map.setFilter("route-stop-names", onRoute || ["==", ["get", "g"], -1]);
@@ -591,7 +599,7 @@ function applyMapFilters() {
     map.setPaintProperty(l, "circle-opacity", dim ? 0.45 : 1);
     map.setPaintProperty(l, "circle-stroke-opacity", dim ? 0.35 : 1);
   }
-  for (const l of ["stop-names", "hub-names"]) map.setPaintProperty(l, "text-opacity", dim ? 0.5 : 1);
+  for (const l of ["stop-names", "big-names", "hub-names"]) map.setPaintProperty(l, "text-opacity", dim ? 0.5 : 1);
 }
 
 function highlightGroup() {
