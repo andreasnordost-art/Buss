@@ -303,7 +303,7 @@ button.dep-in:hover { background: var(--soft); }
 .schematic .picked { fill: none; stroke: var(--accent); pointer-events: none; }
 
 /* Bussmarkörer: pill med linjenummer och en pil för färdriktningen */
-.bus { position: relative; border: 0; background: none; padding: 0; }
+.bus { border: 0; background: none; padding: 0; }
 .bus .pill, .bus .arrow { transition: opacity 0.2s; }
 .bus .pill { display: inline-flex; align-items: center; gap: 4px; background: var(--c); color: #fff; border: 2px solid #fff; border-radius: 10px; padding: 3px 7px 3px 5px; font: 700 13px/1 var(--font); box-shadow: 0 1px 5px rgb(0 0 0 / 0.35); white-space: nowrap; }
 .bus .pill svg { width: 15px; height: 15px; stroke-width: 2.2; }
