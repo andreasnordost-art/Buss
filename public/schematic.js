@@ -44,11 +44,11 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
           const g = stopGroup[s];
           if (seq[seq.length - 1] !== g) seq.push(g);
         }
-        return { seq, trips: v.trips || 1 };
+        return { seq, trips: v.trips || 1, path: v.path };
       })
       .filter((v) => v.seq.length > 1);
     if (!seqs.length) continue;
-    seqs = viaPassedStops(seqs, dist, ekey);
+    seqs = viaPassedStops(passedOnRoad(seqs, groups), dist, ekey);
     const w = new Map();
     for (const { seq, trips } of seqs) {
       const seen = new Set();
@@ -225,6 +225,7 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     .filter((c) => isMain(c) && c.nodes[0] !== c.nodes[c.nodes.length - 1])
     .map((c) => [c.nodes[0], c.nodes[c.nodes.length - 1], (c.nodes.length - 1) * spacing]);
   const minGap = grid * 4;
+  let near = [];
   for (let it = 0; it < 600; it++) {
     const force = new Map(keys.map((g) => [g, [0, 0]]));
     const push = (a, b, want, k) => {
@@ -238,9 +239,18 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
       force.get(b)[0] += dx * f; force.get(b)[1] += dy * f;
     };
     for (const [a, b, want] of springs) push(a, b, want, 0.25);
-    for (let i = 0; i < keys.length; i++) {
-      for (let j = i + 1; j < keys.length; j++) push(keys[i], keys[j], linked.has(ekey(keys[i], keys[j])) ? grid * 2 : minGap, 0.25);
+    // Par som ligger nära varandra; listan förnyas då och då eftersom lägena rör sig långsamt.
+    if (it % 20 === 0) {
+      near = [];
+      for (let i = 0; i < keys.length; i++) {
+        const pi = relaxed.get(keys[i]);
+        for (let j = i + 1; j < keys.length; j++) {
+          const pj = relaxed.get(keys[j]);
+          if (Math.abs(pi[0] - pj[0]) < minGap * 3 && Math.abs(pi[1] - pj[1]) < minGap * 3) near.push([keys[i], keys[j], linked.has(ekey(keys[i], keys[j])) ? grid * 2 : minGap]);
+        }
+      }
     }
+    for (const [a, b, want] of near) push(a, b, want, 0.25);
     // Gångvägarna drar ihop sina hållplatser.
     for (const [a, b] of links) {
       if (!onMain.has(a) || !onMain.has(b)) continue;
@@ -287,6 +297,7 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
   });
 
   // --- Sträckornas form ---------------------------------------------------------------
+  const drawn = [];
   for (const c of [...chains].sort((x, y) => isMain(y) - isMain(x))) {
     const n = c.nodes.length;
     const pins = [0];
@@ -306,15 +317,88 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     for (let j = 1; j < pins.length; j++) {
       const [ia, ib] = [pins[j - 1], pins[j]];
       const hint = target(c.nodes[Math.round((ia + ib) / 2)]);
-      line.push(...octilinear(pinPos[j - 1], pinPos[j], hint).slice(1));
+      // Böjen läggs så att sträckan inte ritas ovanpå en annan sträcka.
+      const ways = octilinear(pinPos[j - 1], pinPos[j], hint);
+      const best = ways.reduce((x, y) => (overlap(y, drawn) < overlap(x, drawn) - 1 ? y : x));
+      line.push(...best.slice(1));
     }
     c.line = dedupePts(line);
+    for (let i = 1; i < c.line.length; i++) drawn.push([c.line[i - 1], c.line[i]]);
     // Hållplatserna fördelas jämnt längs hela sträckan; mellanpunkterna formar bara linjen.
     c.nodePos = c.nodes.map((_, i) => along(c.line, i / (n - 1)));
     for (let i = 1; i < n - 1; i++) if (!key.has(c.nodes[i])) pos.set(c.nodes[i], c.nodePos[i]);
   }
 
   return { chains, pos, key, center, routes: routeIdx, links };
+}
+
+// Hållplatser på linjen som turen kör förbi utan att stanna, enligt bussens väg (formen i
+// tidtabellen). De läggs in i turen, så att t.ex. Kilgatan och Cisternvägen, som ligger
+// på samma gata men används åt var sitt håll, ritas efter varandra i stället för som en slinga.
+function passedOnRoad(seqs, groups) {
+  const cands = [...new Set(seqs.flatMap((v) => v.seq))];
+  const near = 25, clear = 60; // meter
+  return seqs.map((v) => {
+    const path = v.path;
+    if (!path || path.length < 2) return v;
+    const lat0 = groups[v.seq[0]].lat;
+    const cx = Math.cos((lat0 * Math.PI) / 180) * 111320, cy = 110570;
+    const pts = path.map(([lon, lat]) => [lon * cx, lat * cy]);
+    const xy = (g) => [groups[g].lon * cx, groups[g].lat * cy];
+    const segD = (p, i) => {
+      const [a, b] = [pts[i - 1], pts[i]];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+      return Math.hypot(a[0] + t * dx - p[0], a[1] + t * dy - p[1]);
+    };
+    // Turens hållplatser längs vägen, i ordning.
+    const at = [];
+    let from = 1;
+    for (const g of v.seq) {
+      const p = xy(g);
+      let best = [Infinity, from];
+      for (let i = from; i < pts.length; i++) {
+        const d = segD(p, i);
+        if (d < best[0] - 1) best = [d, i];
+        if (best[0] < 15 && i > best[1] + 40) break;
+      }
+      at.push(best[1]);
+      from = best[1];
+    }
+    // Var vägen går nära linjens övriga hållplatser. Vägens delar sorteras i rutor så att
+    // varje hållplats bara jämförs med delarna i sin närhet.
+    const cell = 100;
+    const cells = new Map();
+    for (let i = 1; i < pts.length; i++) {
+      const [a, b] = [pts[i - 1], pts[i]];
+      for (let x = Math.floor((Math.min(a[0], b[0]) - near) / cell); x <= Math.floor((Math.max(a[0], b[0]) + near) / cell); x++)
+        for (let y = Math.floor((Math.min(a[1], b[1]) - near) / cell); y <= Math.floor((Math.max(a[1], b[1]) + near) / cell); y++) {
+          const k = `${x},${y}`;
+          if (!cells.has(k)) cells.set(k, []);
+          cells.get(k).push(i);
+        }
+    }
+    const hits = cands.map((g) => {
+      const p = xy(g);
+      const list = (cells.get(`${Math.floor(p[0] / cell)},${Math.floor(p[1] / cell)}`) || []).filter((i) => segD(p, i) < near);
+      return [g, p, list.sort((x, y) => x - y)];
+    }).filter(([, , list]) => list.length);
+    const out = [v.seq[0]];
+    for (let j = 1; j < v.seq.length; j++) {
+      const [a, b] = [xy(v.seq[j - 1]), xy(v.seq[j])];
+      const lo = at[j - 1], hi = at[j];
+      const win = v.seq.slice(Math.max(0, j - 2), j + 2);
+      const passed = hi > lo
+        ? hits
+            .map(([g, p, list]) => [g, p, list.find((i) => i > lo && i < hi)])
+            .filter(([g, p, i]) => i != null && !win.includes(g) && Math.hypot(p[0] - a[0], p[1] - a[1]) > clear && Math.hypot(p[0] - b[0], p[1] - b[1]) > clear)
+            .sort((x, y) => x[2] - y[2])
+        : [];
+      for (const [g] of passed) if (out[out.length - 1] !== g) out.push(g);
+      out.push(v.seq[j]);
+    }
+    return { ...v, seq: out };
+  });
 }
 
 // En tur som kör förbi en hållplats utan att stanna där, men som linjen annars stannar
@@ -350,18 +434,37 @@ function viaPassedStops(seqs, dist, ekey) {
   });
 }
 
-// Två raka delar, en diagonal och en rak, mellan p och q. Böjen läggs på den sida
-// som ligger närmast hållplatsernas verkliga läge.
+// Två raka delar, en diagonal och en rak, mellan p och q. Ger båda sätten att lägga
+// böjen, det som ligger närmast hållplatsernas verkliga läge först.
 function octilinear(p, q, hint) {
   const dx = q[0] - p[0], dy = q[1] - p[1];
   const adx = Math.abs(dx), ady = Math.abs(dy);
-  if (adx === 0 || ady === 0 || adx === ady) return [p, q];
+  if (adx === 0 || ady === 0 || adx === ady) return [[p, q]];
   const d = Math.min(adx, ady), sx = Math.sign(dx), sy = Math.sign(dy);
   const a = [p[0] + sx * d, p[1] + sy * d];
   const b = [q[0] - sx * d, q[1] - sy * d];
   const da = Math.hypot(a[0] - hint[0], a[1] - hint[1]);
   const db = Math.hypot(b[0] - hint[0], b[1] - hint[1]);
-  return [p, da <= db ? a : b, q];
+  return da <= db ? [[p, a, q], [p, b, q]] : [[p, b, q], [p, a, q]];
+}
+
+// Hur lång bit av linjen som ligger ovanpå redan ritade delar (samma riktning, samma läge).
+function overlap(line, segs) {
+  let sum = 0;
+  for (let i = 1; i < line.length; i++) {
+    const [a, b] = [line[i - 1], line[i]];
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const l = Math.hypot(dx, dy);
+    if (!l) continue;
+    const [ux, uy] = [dx / l, dy / l];
+    for (const [c, d] of segs) {
+      const off = (p) => Math.abs((p[0] - a[0]) * uy - (p[1] - a[1]) * ux);
+      if (off(c) > 2 || off(d) > 2) continue;
+      const tc = (c[0] - a[0]) * ux + (c[1] - a[1]) * uy, td = (d[0] - a[0]) * ux + (d[1] - a[1]) * uy;
+      sum += Math.max(0, Math.min(l, Math.max(tc, td)) - Math.max(0, Math.min(tc, td)));
+    }
+  }
+  return sum;
 }
 
 function along(line, t) {
