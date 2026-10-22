@@ -253,6 +253,7 @@ function setKind(kind) {
   renderLegend();
   if (state.view === "schem") drawSchematic();
   for (const v of state.vehicles.values()) styleMarker(v);
+  syncSchemBuses();
   if (map) fitKind();
 }
 function markKind() {
@@ -653,10 +654,21 @@ function drawSchematic() {
   state.schem = renderSchematic($("#schematic"), net, groups, layout, {
     onStop: (g) => selectGroup(g),
     onRoute: (ri) => openLine(ri),
+    onBus: (id) => openBus(id),
     selectedRoute: state.route,
     padding: viewPadding,
     extra: new Set(idx.filter((i) => net.routes[i].tier === "extra")),
   });
+  syncSchemBuses();
+}
+
+// Bussarna i linjenätet, med samma urval som på kartan.
+function syncSchemBuses() {
+  if (!state.schem) return;
+  state.schem.setVehicles([...state.vehicles.values()].filter((e) => !e.el.hidden).map((e) => ({
+    id: e.data.id, ri: e.ri, lat: e.data.lat, lon: e.data.lon, stale: e.stale, sel: state.bus === e.data.id,
+    label: `Linje ${net.routes[e.ri].name} mot ${e.data.destination || ""}`,
+  })));
 }
 
 // Linjeraden: en färgad skylt per linje som visas, för att snabbt välja en linje.
@@ -680,6 +692,7 @@ function selectRoute(ri, { fit = false } = {}) {
   applyMapFilters();
   state.schem?.select(ri);
   for (const v of state.vehicles.values()) styleMarker(v);
+  syncSchemBuses();
   if (ri != null && fit && map && state.view === "map") {
     if (!map.loaded()) return map.once("load", () => selectRoute(ri, { fit }));
     const b = new maplibregl.LngLatBounds();
@@ -1086,6 +1099,7 @@ function renderVehicles(list) {
     entry.marker.remove();
     state.vehicles.delete(id);
   }
+  syncSchemBuses();
 }
 
 function styleMarker(entry) {
@@ -1127,6 +1141,7 @@ async function openBus(id) {
   applyMapFilters();
   state.schem?.select(null);
   for (const v of state.vehicles.values()) styleMarker(v);
+  syncSchemBuses();
   $("#follow").hidden = false;
   showPart("bus");
   sheet("half");
@@ -1157,6 +1172,7 @@ function closeBus() {
   map?.getSource("journey")?.setData({ type: "FeatureCollection", features: [] });
   applyMapFilters();
   for (const v of state.vehicles.values()) styleMarker(v);
+  syncSchemBuses();
 }
 
 function setFollow(on) {
