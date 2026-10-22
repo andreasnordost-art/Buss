@@ -1,6 +1,6 @@
-// Gör sidan installerbar och snabb att öppna igen. Sidans egna filer visas direkt
-// från cachen och uppdateras i bakgrunden; live-data hämtas alltid från nätet.
-const CACHE = "busskollen-v3";
+// Gör sidan installerbar och möjlig att öppna utan nät. Sidans filer hämtas från nätet
+// först och sparas i cachen; live-data går aldrig via cachen.
+const CACHE = "busskollen-v4";
 const SHELL = ["./", "index.html", "style.css", "app.js", "live.js", "network.js", "schematic.js", "config.js", "icon.svg", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -17,13 +17,13 @@ self.addEventListener("fetch", (e) => {
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(e.request);
-      const fresh = fetch(e.request).then((res) => {
+      // no-cache: fråga servern om filen har ändrats i stället för att lita på webbläsarens cache.
+      const fresh = fetch(e.request.mode === "navigate" ? e.request : new Request(e.request, { cache: "no-cache" })).then((res) => {
         if (res.ok) cache.put(e.request, res.clone());
         return res;
       });
-      // Linjenätet och tidtabellen ändras varje natt: hämta dem från nätet först.
-      if (url.pathname.includes("/data/")) return fresh.catch(() => cached);
-      return cached ? (fresh.catch(() => {}), cached) : fresh;
+      // Nätet först, så att en ny version syns direkt; cachen används när man är offline.
+      return fresh.catch(() => cached || Promise.reject(new Error("offline")));
     }),
   );
 });

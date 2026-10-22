@@ -291,6 +291,14 @@ button.dep-in:hover { background: var(--soft); }
 .schematic .route.extra { opacity: 0.85; }
 .schematic .station { fill: var(--surface); stroke: var(--fg); cursor: pointer; }
 .schematic .walk line { stroke-linecap: round; pointer-events: none; }
+.schematic .bus { cursor: pointer; transition: opacity 0.15s; }
+.schematic .bus rect { stroke: #fff; stroke-width: 2px; filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.35)); }
+.schematic .bus text { font: 700 12px var(--font); fill: #fff; stroke: none; }
+.schematic .bus .icon { fill: none; stroke: #fff; stroke-width: 1.4px; stroke-linecap: round; stroke-linejoin: round; }
+.schematic .bus.dim { opacity: 0.25; }
+.schematic .bus.sel rect { stroke-width: 3px; }
+.schematic .bus:focus-visible { outline: none; }
+.schematic .bus:focus-visible rect { stroke: var(--accent); }
 .schematic .walk-o { stroke: var(--fg); }
 .schematic .walk-i { stroke: var(--surface); }
 .schematic .station.tick { stroke: color-mix(in srgb, var(--fg) 70%, var(--canvas)); }

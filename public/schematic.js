@@ -343,7 +343,7 @@ const GAP = 1;
 
 // opts.geo(g) ger hållplatsgruppens geografiska läge i kartans enheter. Utan den
 // projiceras longitud/latitud in i samma ruta som tunnelbanekartan.
-export function renderSchematic(container, net, groups, layout, { onStop, onRoute, selectedRoute = null, extra = new Set(), geo = null, mode = 1, padding = null } = {}) {
+export function renderSchematic(container, net, groups, layout, { onStop, onRoute, onBus, selectedRoute = null, extra = new Set(), geo = null, mode = 1, padding = null } = {}) {
   container.replaceChildren();
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("class", "schematic");
@@ -357,7 +357,8 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   const linesG = el("g", { class: "routes" });
   const stopsG = el("g", { class: "stations" });
   const labelsG = el("g", { class: "labels" });
-  view.append(extraG, linesG, stopsG, labelsG);
+  const busesG = el("g", { class: "buses" });
+  view.append(extraG, linesG, stopsG, labelsG, busesG);
 
   const step = LW + GAP;
   let geoOf = geo || defaultGeo(groups, layout);
@@ -382,6 +383,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   const lerp = (a, b, s) => [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s];
 
   const bundle = new Map();
+  const slots = new Map(); // sträcka -> linje -> läge i knippet
   const routePaths = [];
   for (const c of layout.chains) {
     const mains = c.routes.filter((ri) => !extra.has(ri));
@@ -392,6 +394,8 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       path.addEventListener("click", () => onRoute?.(ri));
       (isExtra ? extraG : linesG).append(path);
       routePaths.push({ el: path, c, slot, isExtra });
+      if (!slots.has(c)) slots.set(c, new Map());
+      slots.get(c).set(ri, slot);
     };
     mains.forEach((ri, i) => add(ri, i - (kk - 1) / 2, false));
     // Övriga turer läggs utanför de vanliga linjerna, eller i mitten om de är ensamma.
@@ -497,6 +501,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
         ln.style.strokeWidth = `${(i ? 4 : 7.6) * f}px`;
       });
     }
+    placeBuses();
     if (picked != null && layout.pos.has(picked)) {
       const p = nodeAt(picked);
       marker.setAttribute("cx", p[0]);
@@ -577,6 +582,90 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     }
   }
 
+  // --- Bussar ------------------------------------------------------------------------
+  // Varje buss läggs på sin linje mellan de två hållplatser den är närmast, i samma
+  // läge i knippet som linjen.
+  const buses = new Map(); // id -> { el, v, at }
+  let selRoute = selectedRoute;
+  function locate(v) {
+    const cos = Math.cos((v.lat * Math.PI) / 180);
+    const px = v.lon * cos, py = v.lat;
+    let best = null;
+    for (const c of layout.chains) {
+      const slot = slots.get(c)?.get(v.ri);
+      if (slot == null) continue;
+      for (let i = 1; i < c.nodes.length; i++) {
+        const A = groups[c.nodes[i - 1]], B = groups[c.nodes[i]];
+        const ax = A.lon * cos, ay = A.lat, dx = B.lon * cos - ax, dy = B.lat - ay;
+        const u = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1e-12)));
+        const d = (ax + u * dx - px) ** 2 + (ay + u * dy - py) ** 2;
+        if (!best || d < best.d) best = { d, c, f: (i - 1 + u) / (c.nodes.length - 1), slot };
+      }
+    }
+    return best;
+  }
+  function placeBuses() {
+    busesG.style.display = t < 0.999 ? "none" : "";
+    if (t < 0.999) return;
+    const f = sizeFactor(k);
+    for (const b of buses.values()) {
+      if (!b.at) continue;
+      const { c, f: along_, slot } = b.at;
+      const p = along(c.line, along_);
+      const dir = segDir(c.line, p);
+      const o = slot * step * f;
+      // Bussarna krymper lite när hela nätet visas, så att de inte täcker linjerna.
+      const size = Math.max(0.7, Math.min(1, k));
+      b.el.setAttribute("transform", `translate(${(p[0] - dir[1] * o).toFixed(2)} ${(p[1] + dir[0] * o).toFixed(2)}) scale(${size / k})`);
+    }
+  }
+  function busNode(v) {
+    const g = el("g", { class: "bus", role: "button", tabindex: "0" });
+    // Avrundad skylt med en liten buss, så att den skiljer sig från linjenumren vid ändhållplatserna.
+    const r = el("rect", { y: -10, height: 20, rx: 10 });
+    const t = el("text", { y: 4.2, "text-anchor": "start" });
+    const icon = el("path", { class: "icon", d: "M-3.5 -5h7a1.5 1.5 0 0 1 1.5 1.5v7h-10v-7a1.5 1.5 0 0 1 1.5-1.5ZM-5 0.5h10M-2.8 3.5v1.6M2.8 3.5v1.6" });
+    const title = el("title", {});
+    g.append(r, icon, t, title);
+    const open = (e) => { e.stopPropagation(); onBus?.(v.id); };
+    g.addEventListener("click", open);
+    g.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && open(e));
+    g.addEventListener("pointerdown", (e) => e.stopPropagation());
+    return g;
+  }
+  // list: [{ id, ri, lat, lon, stale, sel, label }]
+  function setVehicles(list) {
+    const seen = new Set();
+    for (const v of list) {
+      if (!net.routes[v.ri]) continue;
+      const at = locate(v);
+      if (!at) continue;
+      seen.add(v.id);
+      let b = buses.get(v.id);
+      if (!b) {
+        b = { el: busNode(v) };
+        buses.set(v.id, b);
+        busesG.append(b.el);
+      }
+      Object.assign(b, { v, at });
+      const name = net.routes[v.ri].name;
+      const w = name.length * 7.4 + 30;
+      const [rect, icon, text, title] = b.el.children;
+      rect.setAttribute("x", -w / 2);
+      rect.setAttribute("width", w);
+      icon.setAttribute("transform", `translate(${-w / 2 + 12} 0)`);
+      text.setAttribute("x", -w / 2 + 20);
+      rect.setAttribute("fill", v.stale ? "#8b9792" : net.routes[v.ri].c);
+      text.textContent = name;
+      title.textContent = v.label || `Linje ${name}`;
+      b.el.dataset.route = v.ri;
+      b.el.classList.toggle("sel", !!v.sel);
+      b.el.classList.toggle("dim", selRoute != null && selRoute !== v.ri);
+    }
+    for (const [id, b] of buses) if (!seen.has(id)) { b.el.remove(); buses.delete(id); }
+    placeBuses();
+  }
+
   draw();
   const content = view.getBBox();
   pz = panZoom(svg, view, content, (nk) => {
@@ -591,7 +680,10 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     get mode() {
       return t;
     },
+    setVehicles,
     select(ri) {
+      selRoute = ri;
+      for (const b of buses.values()) b.el.classList.toggle("dim", ri != null && ri !== b.v.ri);
       svg.classList.toggle("has-sel", ri != null);
       for (const g of [extraG, linesG]) {
         for (const p of g.children) p.classList.toggle("sel", +p.dataset.route === ri);
