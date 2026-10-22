@@ -13,15 +13,22 @@ const KX = 111320 * Math.cos(63.3 * RAD); // meter per längdgrad kring Örnskö
 const KY = 110540;
 
 // En etapp räknas som rak när nästan hela längden är ett enda streck över så här lång sträcka.
-const STRAIGHT_MIN_METERS = 600;
+// Korta raka etapper (under CHAIN_MIN_METERS) är ofta riktiga raka gator: de slås bara upp
+// i vägnavigeringen, aldrig via andra hållplatser, så att de inte blir omvägar.
+const STRAIGHT_MIN_METERS = 300;
+const CHAIN_MIN_METERS = 600;
 const STRAIGHT_SHARE = 0.8;
 // En ersättning får vara högst så här mycket längre än fågelvägen.
 const DETOUR_FACTOR = 1.6;
 const DETOUR_EXTRA = 400;
+// Vägnavigeringens väg får vara lite längre (den vet inte var bussen vänder), men inte
+// en lång omväg via en motorvägsramp åt fel håll.
+const ROUTED_FACTOR = 2;
+const ROUTED_EXTRA = 500;
 
 // routes: [{ variants: [{ path: [[lon, lat]], stops: [stopIndex] }] }]
 // coords: stopIndex -> [lon, lat]. route(a, b): [[lon, lat]] längs vägen eller null.
-// Ändrar path på plats och returnerar { fixed, routed, left }.
+// Ändrar path på plats och returnerar { fixed, routed, left, legs: [[a, b, hur]] }.
 export async function repairStraightLegs(routes, coords, route = null) {
   const variants = routes.flatMap((r) => r.variants).filter((v) => v.stops.length >= 2 && v.path.length >= 2);
   const split = variants.map((v) => splitLegs(v.path, v.stops.map((s) => coords[s])));
@@ -43,6 +50,8 @@ export async function repairStraightLegs(routes, coords, route = null) {
     });
   });
 
+  const chain = (leg, a, b) => (leg.len >= CHAIN_MIN_METERS ? roadBetween(edges, a, b, dist(coords[a], coords[b])) : null);
+
   // Raka etapper utan vägföljande kedja slås upp en gång per hållplatspar.
   const routed = new Map();
   if (route) {
@@ -50,16 +59,16 @@ export async function repairStraightLegs(routes, coords, route = null) {
       for (const [i, leg] of split[vi].legs.entries()) {
         const a = v.stops[i], b = v.stops[i + 1];
         const key = `${a}>${b}`;
-        if (!leg.straight || a === b || routed.has(key) || roadBetween(edges, a, b, dist(coords[a], coords[b]))) continue;
+        if (!leg.straight || a === b || routed.has(key) || chain(leg, a, b)) continue;
         routed.set(key, null);
         const pts = await route(coords[a], coords[b]).catch(() => null);
         if (pts?.length >= 2 && dist(pts[0], coords[a]) < 150 && dist(pts[pts.length - 1], coords[b]) < 150 &&
-            length(pts) <= 3 * dist(coords[a], coords[b]) + 1000) routed.set(key, pts);
+            length(pts) <= ROUTED_FACTOR * dist(coords[a], coords[b]) + ROUTED_EXTRA) routed.set(key, pts);
       }
     }
   }
 
-  const count = { fixed: 0, routed: 0, left: 0 };
+  const count = { fixed: 0, routed: 0, left: 0, legs: [] };
   variants.forEach((v, vi) => {
     const { head, legs, tail } = split[vi];
     if (!legs.some((l) => l.straight)) return;
@@ -68,10 +77,10 @@ export async function repairStraightLegs(routes, coords, route = null) {
       const a = v.stops[i], b = v.stops[i + 1];
       let road = null;
       if (leg.straight && a !== b) {
-        road = roadBetween(edges, a, b, dist(coords[a], coords[b]));
-        if (road) count.fixed++;
-        else if ((road = routed.get(`${a}>${b}`))) count.routed++;
-        else count.left++;
+        road = chain(leg, a, b);
+        const how = road ? "fixed" : (road = routed.get(`${a}>${b}`)) ? "routed" : "left";
+        count[how]++;
+        count.legs.push([a, b, how]);
       }
       append(out, road || leg.pts);
     });
@@ -84,7 +93,7 @@ export async function repairStraightLegs(routes, coords, route = null) {
 const length = (pts) => pts.reduce((sum, p, i) => sum + (i ? dist(pts[i - 1], p) : 0), 0);
 
 // Delar formen vid de punkter som ligger närmast varje hållplats, i turordning.
-function splitLegs(path, stops) {
+export function splitLegs(path, stops) {
   const xy = path.map(toXY);
   const cum = [0];
   for (let i = 1; i < xy.length; i++) cum.push(cum[i - 1] + Math.hypot(xy[i][0] - xy[i - 1][0], xy[i][1] - xy[i - 1][1]));

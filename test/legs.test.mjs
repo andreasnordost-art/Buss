@@ -15,7 +15,7 @@ const routes = [
 coords.push([18.52, 63.40]);
 
 const count = await repairStraightLegs(routes, coords);
-assert.deepEqual(count, { fixed: 1, routed: 0, left: 1 });
+assert.deepEqual([count.fixed, count.routed, count.left], [1, 0, 1]);
 assert.deepEqual(routes[1].variants[0].path, road, "expressturen följer vägen via B");
 assert.deepEqual(routes[0].variants[0].path, road, "vägföljande former lämnas orörda");
 assert.equal(routes[2].variants[0].path.length, 2, "utan väg att låna blir strecket kvar");
