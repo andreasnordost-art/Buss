@@ -7,8 +7,10 @@
 //    ytterområden trycks ihop, och lägena låses till ett rutnät.
 // 4. Varje sträcka ritas med raka linjer i 0°, 45° eller 90°, och linjer som delar
 //    sträcka läggs bredvid varandra.
+// 5. Hållplatser som ligger nästan på samma ställe men på olika linjer (t.ex. Gnistan och
+//    Gullänget Centrum) hålls ihop och får en gångväg mellan sig.
 
-import { shortName } from "./network.js";
+import { shortName, distance } from "./network.js";
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -88,6 +90,24 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
       if (routeSet(n, x) !== routeSet(n, y)) key.add(n);
     }
   }
+  // Gångvägar: hållplatser utan gemensam linje som ligger nära varandra. De blir knutpunkter
+  // så att de placeras bredvid varandra.
+  const linkDist = opts.linkDist ?? 120; // meter
+  const links = [];
+  const nodeList = [...adj.keys()];
+  for (let i = 0; i < nodeList.length; i++) {
+    for (let j = i + 1; j < nodeList.length; j++) {
+      const [a, b] = [nodeList[i], nodeList[j]];
+      // Bara hållplatser på olika linjer; samma linje har redan sin väg mellan dem.
+      if (adj.get(a).has(b) || [...groups[a].routes].some((r) => groups[b].routes.has(r))) continue;
+      if (distance(groups[a].lat, groups[a].lon, groups[b].lat, groups[b].lon) > linkDist) continue;
+      links.push([a, b]);
+      key.add(a);
+      key.add(b);
+    }
+  }
+  const linked = new Set(links.map(([a, b]) => ekey(a, b)));
+
   const chains = [];
   const used = new Set();
   const walkFrom = (k) => {
@@ -183,7 +203,19 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
       force.get(b)[0] += dx * f; force.get(b)[1] += dy * f;
     };
     for (const [a, b, want] of springs) push(a, b, want, 0.25);
-    for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) push(keys[i], keys[j], minGap, 0.25);
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) push(keys[i], keys[j], linked.has(ekey(keys[i], keys[j])) ? grid * 2 : minGap, 0.25);
+    }
+    // Gångvägarna drar ihop sina hållplatser.
+    for (const [a, b] of links) {
+      const pa = relaxed.get(a), pb = relaxed.get(b);
+      const dx = pb[0] - pa[0], dy = pb[1] - pa[1];
+      const d = Math.hypot(dx, dy);
+      if (d <= grid * 2) continue;
+      const f = ((d - grid * 2) / d) * 0.2;
+      force.get(a)[0] += dx * f; force.get(a)[1] += dy * f;
+      force.get(b)[0] -= dx * f; force.get(b)[1] -= dy * f;
+    }
     for (const g of keys) {
       const p = relaxed.get(g), t = target(g), f = force.get(g);
       p[0] += f[0] + (t[0] - p[0]) * 0.008;
@@ -195,7 +227,21 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     return [p[0] - t[0], p[1] - t[1]];
   };
   // Viktigaste knutpunkterna först så att de får sina bästa lägen.
-  keys.sort((a, b) => groups[b].routes.size - groups[a].routes.size).forEach((g) => place(g, relaxed.get(g)));
+  // En hållplats med gångväg läggs två rutor från sin redan placerade granne.
+  const partners = new Map();
+  for (const [a, b] of links) {
+    if (!partners.has(a)) partners.set(a, []);
+    if (!partners.has(b)) partners.set(b, []);
+    partners.get(a).push(b);
+    partners.get(b).push(a);
+  }
+  keys.sort((a, b) => groups[b].routes.size - groups[a].routes.size).forEach((g) => {
+    const near = (partners.get(g) || []).find((o) => pos.has(o));
+    if (near == null) return place(g, relaxed.get(g));
+    const [pp, rg, ro] = [pos.get(near), relaxed.get(g), relaxed.get(near)];
+    const ang = Math.round(Math.atan2(rg[1] - ro[1], rg[0] - ro[0]) / (Math.PI / 4)) * (Math.PI / 4);
+    place(g, [pp[0] + Math.cos(ang) * grid * 2, pp[1] + Math.sin(ang) * grid * 2]);
+  });
 
   // --- Sträckornas form ---------------------------------------------------------------
   for (const c of chains) {
@@ -225,7 +271,7 @@ export function layoutSchematic(net, groups, stopGroup, routeIdx, opts = {}) {
     for (let i = 1; i < n - 1; i++) if (!key.has(c.nodes[i])) pos.set(c.nodes[i], c.nodePos[i]);
   }
 
-  return { chains, pos, key, center, routes: routeIdx };
+  return { chains, pos, key, center, routes: routeIdx, links };
 }
 
 // Två raka delar, en diagonal och en rak, mellan p och q. Böjen läggs på den sida
@@ -375,6 +421,14 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     stopsG.append(mark);
     stations.push({ el: mark, g, r });
   }
+  // Gångvägar mellan närliggande hållplatser, under hållplatsringarna.
+  const walks = (layout.links || []).map(([a, b]) => {
+    const g = el("g", { class: "walk" });
+    const outer = el("line", { class: "walk-o" }), inner = el("line", { class: "walk-i" });
+    g.append(outer, inner);
+    stopsG.prepend(g);
+    return { a, b, lines: [outer, inner] };
+  });
   const marker = el("circle", { class: "picked", visibility: "hidden" });
   stopsG.append(marker);
   let picked = null;
@@ -434,6 +488,14 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       st.el.setAttribute("transform", `translate(${p[0].toFixed(2)} ${p[1].toFixed(2)}) rotate(${(Math.atan2(dir[1], dir[0]) * 180) / Math.PI})`);
       st.p = p;
       st.dir = dir;
+    }
+    for (const { a, b, lines } of walks) {
+      const [pa, pb] = [nodeAt(a), nodeAt(b)];
+      lines.forEach((ln, i) => {
+        ln.setAttribute("x1", pa[0]); ln.setAttribute("y1", pa[1]);
+        ln.setAttribute("x2", pb[0]); ln.setAttribute("y2", pb[1]);
+        ln.style.strokeWidth = `${(i ? 4 : 7.6) * f}px`;
+      });
     }
     if (picked != null && layout.pos.has(picked)) {
       const p = nodeAt(picked);
