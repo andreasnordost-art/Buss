@@ -34,6 +34,12 @@
     <section class="mapwrap" aria-label="Karta">
       <div id="map"></div>
       <div id="schematic" class="schemwrap" hidden></div>
+      <div id="legend" class="legend" role="group" aria-label="Välj linje"></div>
+      <div class="schemctl" role="group" aria-label="Zooma linjenätet">
+        <button type="button" data-zoom="in" aria-label="Zooma in"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg></button>
+        <button type="button" data-zoom="out" aria-label="Zooma ut"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+        <button type="button" data-zoom="fit" aria-label="Visa hela linjenätet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      </div>
       <div class="mapbar">
         <div class="seg" role="radiogroup" aria-label="Karttyp">
           <button type="button" role="radio" data-view="map" aria-checked="true">Karta</button>

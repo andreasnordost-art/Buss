@@ -297,7 +297,7 @@ const GAP = 1.5;
 
 // opts.geo(g) ger hållplatsgruppens geografiska läge i kartans enheter. Utan den
 // projiceras longitud/latitud in i samma ruta som tunnelbanekartan.
-export function renderSchematic(container, net, groups, layout, { onStop, onRoute, selectedRoute = null, extra = new Set(), geo = null, mode = 1 } = {}) {
+export function renderSchematic(container, net, groups, layout, { onStop, onRoute, selectedRoute = null, extra = new Set(), geo = null, mode = 1, padding = null } = {}) {
   container.replaceChildren();
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("class", "schematic");
@@ -398,9 +398,11 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   // Aktuellt läge för en hållplatsgrupp vid blandningen t.
   const nodeAt = (g) => lerp(geoOf(g), layout.pos.get(g), t);
 
+  let lastPts = new Map();
   function draw() {
     const f = sizeFactor(k);
     const pts = new Map(layout.chains.map((c) => [c, c.verts.map((v) => lerp(geoVert(c, v), v.schem, t))]));
+    lastPts = pts;
     for (const { el: path, c, slot, isExtra } of routePaths) {
       const line = offsetLine(dedupePts(pts.get(c)), slot * step * f);
       path.setAttribute("d", `M${line.map((p) => p.map((v) => v.toFixed(2)).join(" ")).join("L")}`);
@@ -440,12 +442,13 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   }
 
   // Namnen placeras om för läget: i tunnelbanekartan vinkelrätt ut från linjen,
-  // i den geografiska till höger om hållplatsen.
+  // i den geografiska till höger om hållplatsen. Ändhållplatser får linjenummer.
   let names = null;
   function buildLabels() {
     labelsG.replaceChildren();
     const items = [];
     const schem = t > 0.5;
+    if (schem) items.push(...terminusBadges());
     for (const st of stations) {
       const g = st.g;
       const major = !!st.r;
@@ -461,10 +464,51 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       let nx = -dir[1], ny = dir[0];
       if (nx < 0 || (nx === 0 && ny > 0)) [nx, ny] = [-nx, -ny];
       const pad = st.r || st.w / 2;
-      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, rotate: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size });
+      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, slant: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size });
     }
-    names = labelLayer(labelsG, items);
+    names = labelLayer(labelsG, items, obstacles);
     names.update(k);
+  }
+
+  // Linjenummer vid ändhållplatser där linjerna tar slut, utåt i linjens riktning.
+  function terminusBadges() {
+    const ends = new Map();
+    for (const c of layout.chains) {
+      for (const [g, atStart] of [[c.nodes[0], true], [c.nodes[c.nodes.length - 1], false]]) {
+        if (!ends.has(g)) ends.set(g, []);
+        ends.get(g).push({ c, atStart });
+      }
+    }
+    const out = [];
+    for (const [g, list] of ends) {
+      if (list.length !== 1) continue;
+      const { c, atStart } = list[0];
+      const routes = c.routes.filter((ri) => !extra.has(ri));
+      if (!routes.length || c.line.length < 2) continue;
+      const L = c.line;
+      const [a, b] = atStart ? [L[1], L[0]] : [L[L.length - 2], L[L.length - 1]];
+      const d = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const st = stations.find((s) => s.g === g);
+      out.push({ badges: routes.map((ri) => ({ text: net.routes[ri].name, c: net.routes[ri].c })), p: layout.pos.get(g), ox: (b[0] - a[0]) / d, oy: (b[1] - a[1]) / d, pad: st?.r || 6 });
+    }
+    return out;
+  }
+
+  // Det som namnen inte får täcka: linjerna och hållplatserna, i skärmens skala.
+  function obstacles(add) {
+    const f = sizeFactor(k);
+    for (const c of layout.chains) {
+      const line = lastPts.get(c);
+      if (!line) continue;
+      const kk = Math.max(1, c.routes.filter((ri) => !extra.has(ri)).length);
+      const hw = ((kk * step) / 2) * f * k;
+      sampleLine(line.map((p) => [p[0] * k, p[1] * k]), Math.max(3, hw), hw, add);
+    }
+    for (const st of stations) {
+      const p = st.r ? nodeAt(st.g) : st.p;
+      if (!p) continue;
+      add(p[0] * k, p[1] * k, (st.r || st.w / 2) * f * k);
+    }
   }
 
   draw();
@@ -473,7 +517,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     k = nk;
     draw();
     names?.update(k);
-  });
+  }, padding);
   buildLabels();
 
   let anim = null;
@@ -562,51 +606,193 @@ export function sizeFactor(k) {
   return Math.max(0.6, Math.min(1.6, k)) / k;
 }
 
-// Hållplatsnamn i konstant skärmstorlek. items: { text, p, nx, ny, pad, major, rotate, prio }.
-// pad är hållplatsens radie i grundstorlek och skalas som hållplatsen (se sizeFactor).
-export function labelLayer(group, items) {
+// Hållplatsnamn och linjenummer i konstant skärmstorlek. Varje namn prövar några lägen
+// (på ena eller andra sidan om linjen, eller snett) och tar det första som inte täcker
+// en linje, en hållplats eller ett annat namn. Vanliga hållplatser utan plats döljs;
+// knutpunkter visas alltid.
+//
+// items: { text, p, nx, ny, pad, major, slant, prio } eller { badges: [{ text, c }], p, ox, oy, pad }.
+// p är i kartans enheter, pad hållplatsens radie i grundstorlek (skalas som i sizeFactor).
+// obstacles(add) lägger till hinder som cirklar add(x, y, r) i skärmens skala (kartan * k).
+const FS = 12.5, FS_MAJOR = 14;
+const BADGE_H = 17;
+
+export function labelLayer(group, items, obstacles = () => {}) {
   const nodes = items.map((it) => {
+    if (it.badges) {
+      const g = el("g", { class: "tbadges" });
+      let x = 0;
+      it.widths = it.badges.map((b) => {
+        const w = Math.max(26, b.text.length * 7.6 + 10);
+        const r = el("rect", { x, y: -BADGE_H / 2, width: w, height: BADGE_H, rx: 5, fill: b.c });
+        const t = el("text", { x: x + w / 2, y: 4, "text-anchor": "middle" });
+        t.textContent = b.text;
+        g.append(r, t);
+        x += w + 3;
+        return w;
+      });
+      it.total = x - 3;
+      group.append(g);
+      return g;
+    }
     const t = el("text", { class: it.major ? "lbl major" : "lbl" });
     t.textContent = it.text;
     group.append(t);
     return t;
   });
-  let timer;
-  function place(k) {
-    items.forEach((it, i) => {
-      const t = nodes[i];
-      t.style.fontSize = `${(it.major ? 13 : 11.5) / k}px`;
-      t.style.strokeWidth = `${3.5 / k}px`;
-      const [x, y] = it.p;
-      const pad = it.pad * sizeFactor(k);
-      if (it.rotate) {
-        t.setAttribute("transform", `translate(${x + 3 / k} ${y - pad - 3 / k}) rotate(-45)`);
+  let timer, k = 1;
+
+  const width = (it, i) => {
+    if (it.w) return it.w;
+    const fs = it.major ? FS_MAJOR : FS;
+    const w = nodes[i].getComputedTextLength?.() || 0;
+    if (w > 0) it.w = w;
+    return w || it.text.length * fs * 0.56;
+  };
+
+  // Lägen för ett namn: geometri i skärmpixlar relativt hållplatsen.
+  function candidates(it, i) {
+    const padS = it.pad * Math.max(0.6, Math.min(1.6, k));
+    if (it.badges) {
+      const horiz = Math.abs(it.ox) >= 0.38;
+      const gap = padS + 4;
+      let x0, y0;
+      if (horiz) {
+        x0 = it.ox > 0 ? it.ox * gap : it.ox * gap - it.total;
+        y0 = it.oy * (gap + BADGE_H / 2);
       } else {
-        const gap = pad + 5 / k;
-        t.setAttribute("x", x + it.nx * gap);
-        t.setAttribute("y", y + it.ny * gap + 4 / k);
-        t.setAttribute("text-anchor", it.nx > 0.3 ? "start" : it.nx < -0.3 ? "end" : "middle");
+        x0 = -(it.badges.length > 1 ? it.total / 2 : it.widths[0] / 2);
+        y0 = it.oy > 0 ? gap + BADGE_H / 2 : -gap - BADGE_H / 2;
       }
-    });
+      return [{ badge: true, x: x0, y: y0 }];
+    }
+    const fs = it.major ? FS_MAJOR : FS;
+    const w = width(it, i);
+    const gap = padS + 5;
+    const side = (nx, ny) => {
+      const anchor = nx > 0.3 ? "start" : nx < -0.3 ? "end" : "middle";
+      const x = nx * gap;
+      const y = ny * gap + (ny > 0.3 ? fs * 0.8 : ny < -0.3 ? -fs * 0.15 : fs * 0.35);
+      const left = anchor === "start" ? x : anchor === "end" ? x - w : x - w / 2;
+      return { x, y, anchor, a: [left, y - fs * 0.35], u: [1, 0], w, fs };
+    };
+    const slant = (up) => {
+      const s = up ? [3, -padS - 3] : [-3, padS + 3];
+      const u = [Math.SQRT1_2, -Math.SQRT1_2], v = [-Math.SQRT1_2, -Math.SQRT1_2];
+      const a = up ? [s[0] + v[0] * fs * 0.35, s[1] + v[1] * fs * 0.35] : [s[0] - u[0] * w + v[0] * fs * 0.35, s[1] - u[1] * w + v[1] * fs * 0.35];
+      return { slant: true, s, anchor: up ? "start" : "end", a, u, w, fs };
+    };
+    if (it.slant) return [slant(true), slant(false)];
+    const list = [side(it.nx, it.ny), side(-it.nx, -it.ny)];
+    if (it.major) list.push(side(1, 0), side(-1, 0), side(0, -1), side(0, 1));
+    return list;
   }
-  function declutter() {
-    for (const t of nodes) t.classList.remove("hidden");
-    const order = items.map((it, i) => i).sort((a, b) => items[b].major - items[a].major || items[b].prio - items[a].prio);
-    const boxes = [];
-    for (const i of order) {
-      const r = nodes[i].getBoundingClientRect();
-      const b = { left: r.left - 2, right: r.right + 2, top: r.top - 1, bottom: r.bottom + 1 };
-      if (boxes.some((o) => b.left < o.right && b.right > o.left && b.top < o.bottom && b.bottom > o.top)) nodes[i].classList.add("hidden");
-      else boxes.push(b);
+
+  // Namnets yta som en rad cirklar längs texten.
+  function shape(c, it) {
+    if (c.badge) {
+      const r = BADGE_H / 2 + 1;
+      const out = [];
+      for (let x = c.x + r - 1; x <= c.x + it.total - r + 1; x += r) out.push([x, c.y, r]);
+      out.push([c.x + it.total - r + 1, c.y, r]);
+      return out;
+    }
+    const r = c.fs * 0.6;
+    const out = [];
+    const n = Math.max(1, Math.ceil((c.w - 2 * r) / (r * 0.9)));
+    for (let j = 0; j <= n; j++) {
+      const s = Math.min(c.w - r, r + j * r * 0.9);
+      out.push([c.a[0] + c.u[0] * s, c.a[1] + c.u[1] * s, r]);
+    }
+    return out;
+  }
+
+  function apply(it, i, c) {
+    const node = nodes[i];
+    const [px, py] = it.p;
+    const base = `translate(${px.toFixed(2)} ${py.toFixed(2)}) scale(${1 / k})`;
+    if (c.badge) return node.setAttribute("transform", `${base} translate(${c.x.toFixed(1)} ${c.y.toFixed(1)})`);
+    node.setAttribute("text-anchor", c.anchor);
+    if (c.slant) {
+      node.setAttribute("x", 0);
+      node.setAttribute("y", 0);
+      node.setAttribute("transform", `${base} translate(${c.s[0].toFixed(1)} ${c.s[1].toFixed(1)}) rotate(-45)`);
+    } else {
+      node.setAttribute("x", c.x.toFixed(1));
+      node.setAttribute("y", c.y.toFixed(1));
+      node.setAttribute("transform", base);
     }
   }
+
+  function place() {
+    items.forEach((it, i) => apply(it, i, candidates(it, i)[it.pick || 0]));
+  }
+
+  // Först ett läge som varken täcker linjer eller andra namn. Knutpunkter får i andra
+  // hand ligga över en linje, men aldrig över ett annat namn.
+  function declutter() {
+    const lines = new Grid(24), labels = new Grid(24);
+    obstacles((x, y, r) => lines.add(x, y, r));
+    const order = items.map((_, i) => i).sort((a, b) => !!items[b].badges - !!items[a].badges || items[b].major - items[a].major || items[b].prio - items[a].prio);
+    for (const i of order) {
+      const it = items[i];
+      const [px, py] = [it.p[0] * k, it.p[1] * k];
+      const cands = candidates(it, i);
+      const free = (j, grids) => shape(cands[j], it).every(([x, y, r]) => grids.every((g) => !g.hit(px + x, py + y, r)));
+      let pick = cands.findIndex((_, j) => free(j, [lines, labels]));
+      if (pick < 0 && (it.major || it.badges)) pick = cands.findIndex((_, j) => free(j, [labels]));
+      if (pick < 0 && it.badges) pick = 0;
+      nodes[i].classList.toggle("hidden", pick < 0);
+      if (pick < 0) continue;
+      it.pick = pick;
+      apply(it, i, cands[pick]);
+      for (const [x, y, r] of shape(cands[pick], it)) labels.add(px + x, py + y, r);
+    }
+  }
+
   return {
-    update(k) {
-      place(k);
+    update(nk) {
+      k = nk;
+      place();
       clearTimeout(timer);
       timer = setTimeout(declutter, 60);
     },
   };
+}
+
+// Enkelt rutnät för att snabbt hitta överlappande cirklar.
+class Grid {
+  constructor(cell) {
+    this.cell = cell;
+    this.map = new Map();
+  }
+  *cells(x, y, r) {
+    const c = this.cell;
+    for (let i = Math.floor((x - r) / c); i <= Math.floor((x + r) / c); i++)
+      for (let j = Math.floor((y - r) / c); j <= Math.floor((y + r) / c); j++) yield `${i},${j}`;
+  }
+  add(x, y, r) {
+    for (const key of this.cells(x, y, r)) {
+      if (!this.map.has(key)) this.map.set(key, []);
+      this.map.get(key).push([x, y, r]);
+    }
+  }
+  hit(x, y, r) {
+    for (const key of this.cells(x, y, r)) {
+      for (const [ox, oy, or] of this.map.get(key) || []) if ((ox - x) ** 2 + (oy - y) ** 2 < (or + r) ** 2) return true;
+    }
+    return false;
+  }
+}
+
+// Punkter med jämna mellanrum längs en linje.
+function sampleLine(line, every, r, add) {
+  for (let i = 1; i < line.length; i++) {
+    const [a, b] = [line[i - 1], line[i]];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const n = Math.max(1, Math.ceil(l / every));
+    for (let j = 0; j <= n; j++) add(a[0] + ((b[0] - a[0]) * j) / n, a[1] + ((b[1] - a[1]) * j) / n, r);
+  }
 }
 
 function segDir(line, p) {
@@ -633,7 +819,8 @@ function el(tag, attrs) {
   return n;
 }
 
-export function panZoom(svg, view, box, onZoom) {
+// padding() ger hur mycket av ytan som täcks av knappar och paneler: { top, right, bottom, left }.
+export function panZoom(svg, view, box, onZoom, padding = null) {
   let k = 1, tx = 0, ty = 0, lastK = null, fitK = 1;
   const apply = () => {
     view.setAttribute("transform", `translate(${tx} ${ty}) scale(${k})`);
@@ -644,11 +831,19 @@ export function panZoom(svg, view, box, onZoom) {
   };
   const fit = () => {
     const w = svg.clientWidth || 800, h = svg.clientHeight || 600;
-    const m = 40;
-    k = fitK = Math.min((w - 2 * m) / box.width, (h - 2 * m) / box.height);
-    tx = (w - box.width * k) / 2 - box.x * k;
-    ty = (h - box.height * k) / 2 - box.y * k;
+    // Extra marginal på sidorna för namnen, som ritas i skärmstorlek utanför linjerna.
+    const m = 24, side = Math.min(70, w * 0.16);
+    const p = { top: 0, right: 0, bottom: 0, left: 0, ...(padding?.() || {}) };
+    const [l, r, t, b] = [p.left + side, p.right + side, p.top + m, p.bottom + m];
+    k = fitK = Math.max(0.1, Math.min((w - l - r) / box.width, (h - t - b) / box.height));
+    tx = l + (w - l - r - box.width * k) / 2 - box.x * k;
+    ty = t + (h - t - b - box.height * k) / 2 - box.y * k;
     apply();
+  };
+  // Mitten av den del av ytan som syns.
+  const mid = () => {
+    const p = { top: 0, right: 0, bottom: 0, left: 0, ...(padding?.() || {}) };
+    return [(p.left + svg.clientWidth - p.right) / 2, (p.top + svg.clientHeight - p.bottom) / 2];
   };
   const zoomAt = (f, cx, cy) => {
     const nk = Math.max(0.1, Math.min(10, k * f));
@@ -705,15 +900,15 @@ export function panZoom(svg, view, box, onZoom) {
   fit();
   return {
     fit,
-    zoom: (f) => zoomAt(f, svg.clientWidth / 2, svg.clientHeight / 2),
+    zoom: (f) => zoomAt(f, ...mid()),
     // Nuvarande vy: skärmpunkt = kartpunkt * k + [tx, ty].
     transform: () => ({ k, tx, ty }),
     // Centrera på p, minst `zoom` gånger inzoomat jämfört med hela kartan.
     center(p, zoom) {
-      const w = svg.clientWidth, h = svg.clientHeight;
+      const [cx, cy] = mid();
       k = Math.max(k, fitK * zoom);
-      tx = w / 2 - p[0] * k;
-      ty = h / 2 - p[1] * k;
+      tx = cx - p[0] * k;
+      ty = cy - p[1] * k;
       apply();
     },
   };
