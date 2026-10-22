@@ -289,6 +289,9 @@ button.dep-in:hover { background: var(--soft); }
 .schematic .route { fill: none; stroke-linecap: round; stroke-linejoin: round; cursor: pointer; transition: opacity 0.15s; }
 .schematic.has-sel .route:not(.sel) { opacity: 0.15; }
 .schematic .route.extra { opacity: 0.85; }
+.schematic .route.alt { opacity: 0.6; }
+.schematic .route.alt.sel { opacity: 1; }
+.schematic .station.alt { opacity: 0.75; }
 .schematic .station { fill: var(--surface); stroke: var(--fg); cursor: pointer; }
 .schematic .walk line { stroke-linecap: round; pointer-events: none; }
 .schematic .bus { cursor: pointer; transition: opacity 0.15s; }
