@@ -600,9 +600,20 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       const mark = el("rect", { class: minor ? "station tick alt" : "station tick" });
       hook(mark, g);
       stopsG.append(mark);
-      stations.push({ el: mark, g, c, i, w, minor, trunk: mainsOf(c).length >= 5 });
+      stations.push({ el: mark, g, c, i, w, minor });
     }
   }
+  // Knutpunkter som syns även utzoomat: ändhållplatser, förgreningar, ställen med minst
+  // tre linjer och byten till fots. Övriga namn visas först när man zoomar in.
+  const endCount = new Map(), nodeRoutes = new Map();
+  for (const c of layout.chains) {
+    const mains = mainsOf(c);
+    if (!mains.length) continue;
+    for (const g of [c.nodes[0], c.nodes[c.nodes.length - 1]]) endCount.set(g, (endCount.get(g) || 0) + 1);
+    for (const g of c.nodes) mains.forEach((ri) => (nodeRoutes.get(g) || nodeRoutes.set(g, new Set()).get(g)).add(ri));
+  }
+  const walkable = new Set((layout.links || []).flat());
+  const isHub = (g) => endCount.get(g) === 1 || endCount.get(g) >= 3 || (nodeRoutes.get(g)?.size || 0) >= 3 || walkable.has(g);
   for (const g of layout.key) {
     const r = Math.min(6.5, Math.max(4.5, ((bundle.get(g) || 1) * step) / 2 + 1.5));
     // Knutpunkter som bara ligger på alternativa färdvägar ritas mindre.
@@ -610,7 +621,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     const mark = el("circle", { class: minor ? "station key alt" : "station key" });
     hook(mark, g);
     stopsG.append(mark);
-    stations.push({ el: mark, g, r: minor ? 3.6 : r, minor });
+    stations.push({ el: mark, g, r: minor ? 3.6 : r, minor, hub: !minor && isHub(g) });
   }
   // Gångvägar mellan närliggande hållplatser, under hållplatsringarna.
   const walks = (layout.links || []).map(([a, b]) => {
@@ -648,7 +659,8 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   function draw() {
     const f = sizeFactor(k);
     // Där fem eller fler linjer går tillsammans visas vanliga hållplatser först när man zoomat in.
-    const dense = !pz || k < pz.fitScale() * 1.8;
+    // Utzoomat: bara linjer och knutpunkter. Vanliga hållplatser när man zoomat in.
+    const dense = !pz || k < pz.fitScale() * DETAIL;
     const pts = new Map(layout.chains.map((c) => [c, c.verts.map((v) => lerp(geoVert(c, v), v.schem, t))]));
     lastPts = pts;
     for (const { el: path, c, ri, slot, isExtra } of routePaths) {
@@ -667,10 +679,11 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
         const p = nodeAt(st.g);
         st.el.setAttribute("cx", p[0]);
         st.el.setAttribute("cy", p[1]);
-        st.el.setAttribute("r", st.r * f);
+        // Knutpunkter utan namn utzoomat ritas små, så att de inte ser ut som bytespunkter.
+        st.el.setAttribute("r", (dense && !st.hub && !st.minor ? Math.min(st.r, 3.4) : st.r) * f);
         continue;
       }
-      st.el.style.display = st.off || (st.trunk && dense) ? "none" : "";
+      st.el.style.display = st.off || dense ? "none" : "";
       const line = pts.get(st.c);
       const p = line[st.c.verts.findIndex((v) => Math.abs(v.idx - st.i) < 1e-9)];
       const dir = segDir(line, p);
@@ -716,7 +729,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     for (const st of stations) {
       if (st.off) continue;
       const g = st.g;
-      const major = !!st.r && !st.minor;
+      const major = !!st.hub;
       const p = st.r ? nodeAt(g) : st.p;
       let dir = [0, 1];
       if (schem) {
@@ -729,7 +742,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       let nx = -dir[1], ny = dir[0];
       if (nx < 0 || (nx === 0 && ny > 0)) [nx, ny] = [-nx, -ny];
       const pad = st.r || st.w / 2;
-      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, slant: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size, minK: major ? 0 : Math.max(MIN_K_MINOR, st.trunk || st.minor ? pz.fitScale() * 1.8 : 0) });
+      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, slant: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size, minK: major ? 0 : pz.fitScale() * (st.r && !st.minor ? KEY_ZOOM : DETAIL) });
     }
     names = labelLayer(labelsG, items, obstacles);
     names.update(k);
@@ -802,6 +815,8 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   function placeBuses() {
     busesG.style.display = t < 0.999 ? "none" : "";
     if (t < 0.999) return;
+    // Utzoomat är bussarna prickar i linjens färg; skylten med nummer visas inzoomat.
+    busesG.classList.toggle("dots", !!pz && k < pz.fitScale() * DETAIL);
     const f = sizeFactor(k);
     for (const b of buses.values()) {
       if (!b.at) continue;
@@ -821,7 +836,8 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     const t = el("text", { y: 4.2, "text-anchor": "start" });
     const icon = el("path", { class: "icon", d: "M-3.5 -5h7a1.5 1.5 0 0 1 1.5 1.5v7h-10v-7a1.5 1.5 0 0 1 1.5-1.5ZM-5 0.5h10M-2.8 3.5v1.6M2.8 3.5v1.6" });
     const title = el("title", {});
-    g.append(r, icon, t, title);
+    const dot = el("circle", { class: "dot", r: 6 });
+    g.append(r, icon, t, title, dot);
     const open = (e) => { e.stopPropagation(); onBus?.(v.id); };
     g.addEventListener("click", open);
     g.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && open(e));
@@ -845,12 +861,13 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       Object.assign(b, { v, at });
       const name = net.routes[v.ri].name;
       const w = name.length * 7.4 + 30;
-      const [rect, icon, text, title] = b.el.children;
+      const [rect, icon, text, title, dot] = b.el.children;
       rect.setAttribute("x", -w / 2);
       rect.setAttribute("width", w);
       icon.setAttribute("transform", `translate(${-w / 2 + 12} 0)`);
       text.setAttribute("x", -w / 2 + 20);
       rect.setAttribute("fill", v.stale ? "#8b9792" : net.routes[v.ri].c);
+      dot.setAttribute("fill", v.stale ? "#8b9792" : net.routes[v.ri].c);
       text.textContent = name;
       title.textContent = v.label || `Linje ${name}`;
       b.el.dataset.route = v.ri;
@@ -972,8 +989,8 @@ export function sizeFactor(k) {
 // items: { text, p, nx, ny, pad, major, slant, prio, minK } (minK: dolt vid mindre zoom) eller { badges: [{ text, c }], p, ox, oy, pad }.
 // p är i kartans enheter, pad hållplatsens radie i grundstorlek (skalas som i sizeFactor).
 // obstacles(add) lägger till hinder som cirklar add(x, y, r) i skärmens skala (kartan * k).
-// Vanliga hållplatsnamn visas först när hållplatserna ligger minst ~14 px isär (24 px * k).
-const MIN_K_MINOR = 0.6;
+const DETAIL = 1.6; // vanliga hållplatser och deras namn, gånger zoomen för hela kartan
+const KEY_ZOOM = 1.25; // övriga knutpunkters namn
 const BADGE_H = 17;
 
 export function labelLayer(group, items, obstacles = () => {}) {

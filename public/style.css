@@ -299,6 +299,9 @@ button.dep-in:hover { background: var(--soft); }
 .schematic .bus text { font: 700 12px var(--font); fill: #fff; stroke: none; }
 .schematic .bus .icon { fill: none; stroke: #fff; stroke-width: 1.4px; stroke-linecap: round; stroke-linejoin: round; }
 .schematic .bus.dim { opacity: 0.25; }
+.schematic .bus .dot { display: none; stroke: #fff; stroke-width: 2px; filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.35)); }
+.schematic .buses.dots .bus > :is(rect, text, .icon) { display: none; }
+.schematic .buses.dots .bus .dot { display: inline; }
 .schematic .bus.sel rect { stroke-width: 3px; }
 .schematic .bus:focus-visible { outline: none; }
 .schematic .bus:focus-visible rect { stroke: var(--accent); }
@@ -327,6 +330,9 @@ button.dep-in:hover { background: var(--soft); }
 .bus.stale .pill { background: #8b9792; }
 .bus.dim .pill, .bus.dim .arrow { opacity: 0.3; } /* MapLibre styr själva markörens opacity */
 .bus.sel .pill { box-shadow: 0 0 0 3px var(--c), 0 2px 8px rgb(0 0 0 / 0.4); transform: scale(1.12); }
+.far .bus .pill { padding: 2px 5px; font-size: 11px; border-width: 1.5px; border-radius: 8px; }
+.far .bus .pill svg { display: none; }
+.far .bus .arrow::before { top: -20px; left: -4px; border-width: 0 4px 6px; }
 .me { width: 16px; height: 16px; border-radius: 50%; background: #2563eb; border: 3px solid #fff; box-shadow: 0 0 0 7px rgb(37 99 235 / 0.22); }
 .maplibregl-ctrl-group { border-radius: 12px !important; box-shadow: var(--shadow) !important; }
 
