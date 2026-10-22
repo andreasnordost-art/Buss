@@ -5,7 +5,7 @@ import { readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const out = mkdtempSync(`${tmpdir()}/buss-`);
-execFileSync("node", ["scripts/build-data.mjs", "--dir", "test/fixture", "--out", out, "--start", "2026-10-21"]);
+execFileSync("node", ["scripts/build-data.mjs", "--dir", "test/fixture", "--out", out, "--start", "2026-10-21", "--no-router"]);
 const net = JSON.parse(readFileSync(`${out}/network.json`, "utf8"));
 
 const names = net.routes.map((r) => r.name);

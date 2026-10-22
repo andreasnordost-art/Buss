@@ -4,7 +4,7 @@
   "description": "Busskollen Övik: bussarna i Örnsköldsvik live på kartan",
   "type": "module",
   "scripts": {
-    "test": "node test/build.test.mjs && node test/schematic.test.mjs && node test/realtime.test.mjs && node test/live.test.mjs && node test/original.test.mjs",
+    "test": "node test/build.test.mjs && node test/legs.test.mjs && node test/schematic.test.mjs && node test/realtime.test.mjs && node test/live.test.mjs && node test/original.test.mjs",
     "build": "node scripts/build-data.mjs",
     "build:original": "node scripts/import-original.mjs",
     "dev": "node scripts/dev.mjs"

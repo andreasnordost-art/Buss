@@ -384,7 +384,7 @@ function initMap() {
     if (String(e?.error?.message || "").includes("styles/") && state.style !== "light") setStyle("light");
   });
   const STOP_LAYERS = ["stops", "stop-hubs", "route-stops", "stop-names", "big-names", "hub-names", "route-stop-names"];
-  for (const l of [...STOP_LAYERS, "route-line", "route-extra", "route-badges"]) {
+  for (const l of [...STOP_LAYERS, "route-line", "route-extra", "route-badges", "route-badges-minor"]) {
     map.on("mouseenter", l, () => (map.getCanvas().style.cursor = "pointer"));
     map.on("mouseleave", l, () => (map.getCanvas().style.cursor = ""));
   }
@@ -393,7 +393,7 @@ function initMap() {
     const near = (d, layers) => map.queryRenderedFeatures([[e.point.x - d, e.point.y - d], [e.point.x + d, e.point.y + d]], { layers: layers.filter((l) => map.getLayer(l)) });
     const stop = near(mobile() ? 12 : 8, STOP_LAYERS)[0];
     if (stop) return selectGroup(stop.properties.g);
-    const hit = near(mobile() ? 10 : 6, ["route-badges", "route-selected", "route-line", "route-extra"]);
+    const hit = near(mobile() ? 10 : 6, ["route-badges", "route-badges-minor", "route-selected", "route-line", "route-extra"]);
     if (hit.length) openLine(hit[0].properties.r);
   });
   // Den hopfällda källhänvisningen tar mindre plats på mobilen.
@@ -468,8 +468,12 @@ function addLayers() {
     layout: round, paint: { "line-color": ["get", "c"], "line-width": width(5, 9) } }, below);
   // Linjenummer längs linjerna, som små skyltar i linjens färg.
   // Linjenummer längs linjerna först när man zoomat in; utzoomat räcker linjeraden.
-  map.addLayer({ id: "route-badges", type: "symbol", source: "routes", minzoom: 12.5, filter: ["==", ["get", "r"], -1],
-    layout: { "symbol-placement": "line", "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 12.5, 520, 16, 900], "icon-image": ["concat", "line-", ["get", "name"]], "icon-rotation-alignment": "viewport", "icon-padding": 6, "symbol-sort-key": ["get", "rank"] } });
+  const badgeLayout = { "symbol-placement": "line", "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 12.5, 520, 16, 900], "icon-image": ["concat", "line-", ["get", "name"]], "icon-rotation-alignment": "viewport", "icon-padding": 6, "symbol-sort-key": ["get", "rank"] };
+  // Streckade linjer (övriga turer och turer som går en annan väg) får lika bleka skyltar.
+  // Lagret ligger under de vanliga skyltarna, som därför vinner där de krockar.
+  map.addLayer({ id: "route-badges-minor", type: "symbol", source: "routes", minzoom: 12.5, filter: ["==", ["get", "r"], -1],
+    layout: { ...badgeLayout, "icon-size": 0.85 }, paint: { "icon-opacity": 0.55 } });
+  map.addLayer({ id: "route-badges", type: "symbol", source: "routes", minzoom: 12.5, filter: ["==", ["get", "r"], -1], layout: badgeLayout });
   map.addLayer({ id: "journey-stops", type: "circle", source: "journey", filter: ["==", ["get", "part"], "stop"],
     paint: { "circle-radius": zoomed([[11, 3.5], [16, 6]]), "circle-color": casing, "circle-stroke-color": ["get", "c"], "circle-stroke-width": 2.5 } });
   // Hållplatser: knutpunkter syns tidigt och större, övriga när man zoomat in.
@@ -580,10 +584,16 @@ function applyMapFilters() {
   map.setPaintProperty("route-alt", "line-opacity", dim && state.route == null ? 0.2 : 0.8);
   map.setFilter("route-selected", ["all", ["==", ["get", "r"], sel], ["get", "main"]]);
   map.setFilter("route-selected-casing", ["all", ["==", ["get", "r"], sel], ["get", "main"]]);
-  // Linjenummer: alla visade linjer, eller bara den valda.
-  map.setFilter("route-badges", state.bus != null ? ["==", ["get", "r"], -1]
+  // Linjenummer: alla visade linjer, eller bara den valda. Streckade linjer får bleka skyltar.
+  const none = ["==", ["get", "r"], -1];
+  map.setFilter("route-badges", state.bus != null ? none
     : state.route != null ? ["all", ["==", ["get", "r"], sel], ["get", "main"]]
-    : ["all", ["get", "main"], kindFilter, state.extra ? true : ["!", ["get", "extra"]]]);
+    : ["all", ["get", "main"], kindFilter, ["!", ["get", "extra"]]]);
+  map.setFilter("route-badges-minor", state.bus != null ? none
+    : state.route != null ? ["all", ["==", ["get", "r"], sel], ["!", ["get", "main"]]]
+    : ["any",
+      state.extra ? ["all", ["get", "main"], kindFilter, ["get", "extra"]] : false,
+      state.alt ? ["all", ["!", ["get", "main"]], kindFilter, state.extra ? true : ["!", ["get", "extra"]]] : false]);
   const stopFilter = ["all", state.kind === "all" ? true : ["in", state.kind, ["get", "kinds"]], state.extra ? true : ["!", ["get", "extraOnly"]]];
   map.setFilter("stops", stopFilter);
   map.setFilter("stop-hubs", ["all", stopFilter, ["get", "hub"]]);
