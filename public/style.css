@@ -290,7 +290,7 @@ button.dep-in:hover { background: var(--soft); }
 .schematic.has-sel .route:not(.sel) { opacity: 0.15; }
 .schematic .route.extra { opacity: 0.85; }
 .schematic .station { fill: var(--surface); stroke: var(--fg); cursor: pointer; }
-.schematic .station.key { stroke-width: 2.2px; }
+.schematic .station.tick { stroke: color-mix(in srgb, var(--fg) 70%, var(--canvas)); }
 .schematic .station:hover { fill: var(--accent-soft); }
 .schematic .station:focus-visible { outline: none; stroke: var(--accent); stroke-width: 3; }
 .schematic .lbl { font-family: var(--font); font-size: 12.5px; fill: color-mix(in srgb, var(--fg) 82%, var(--canvas)); pointer-events: none; paint-order: stroke; stroke: var(--canvas); stroke-width: 4px; stroke-linejoin: round; }
@@ -333,6 +333,8 @@ button.dep-in:hover { background: var(--soft); }
   .legend .badge { box-shadow: var(--shadow); }
   .legend .badge.sel { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--c); }
   .schemctl { bottom: calc(var(--sheet-h) + 12px); transition: bottom 0.25s; }
+  .schematic .lbl { font-size: 11.5px; }
+  .schematic .lbl.major { font-size: 12.5px; }
   #follow:not([hidden]) ~ .layers .lbl { display: none; }
   .panel {
     position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;

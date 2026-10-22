@@ -292,8 +292,8 @@ function offsetLine(line, o) {
 // tunnelbanekartans hörn. Mellan lägena glider punkterna rakt mot sin plats, så att
 // linjerna ser ut att sträckas ut och räta upp sig.
 
-const LW = 5; // linjebredd
-const GAP = 1.5;
+const LW = 3.5; // linjebredd
+const GAP = 1;
 
 // opts.geo(g) ger hållplatsgruppens geografiska läge i kartans enheter. Utan den
 // projiceras longitud/latitud in i samma ruta som tunnelbanekartan.
@@ -353,23 +353,23 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     for (const g of c.nodes) bundle.set(g, Math.max(bundle.get(g) || 0, Math.max(kk, 1)));
   }
 
-  // Hållplatser: vanliga som avlånga markeringar tvärs över linjerna, knutpunkter som ringar.
+  // Hållplatser: vanliga som smala markeringar tvärs över linjerna, knutpunkter som ringar.
   const stations = [];
   const placed = new Set();
   for (const c of layout.chains) {
-    const w = Math.max(1, c.routes.filter((ri) => !extra.has(ri)).length) * step + 2;
+    const w = Math.max(1, c.routes.filter((ri) => !extra.has(ri)).length) * step + 2.5;
     for (let i = 1; i < c.nodes.length - 1; i++) {
       const g = c.nodes[i];
       if (layout.key.has(g) || placed.has(g)) continue;
       placed.add(g);
-      const mark = el("rect", { class: "station" });
+      const mark = el("rect", { class: "station tick" });
       hook(mark, g);
       stopsG.append(mark);
-      stations.push({ el: mark, g, c, i, w });
+      stations.push({ el: mark, g, c, i, w, trunk: c.routes.filter((ri) => !extra.has(ri)).length >= 5 });
     }
   }
   for (const g of layout.key) {
-    const r = Math.min(9, Math.max(6, ((bundle.get(g) || 1) * step) / 2 + 2));
+    const r = Math.min(6.5, Math.max(4.5, ((bundle.get(g) || 1) * step) / 2 + 1.5));
     const mark = el("circle", { class: "station key" });
     hook(mark, g);
     stopsG.append(mark);
@@ -399,8 +399,11 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
   const nodeAt = (g) => lerp(geoOf(g), layout.pos.get(g), t);
 
   let lastPts = new Map();
+  let pz = null;
   function draw() {
     const f = sizeFactor(k);
+    // Där fem eller fler linjer går tillsammans visas vanliga hållplatser först när man zoomat in.
+    const dense = !pz || k < pz.fitScale() * 1.8;
     const pts = new Map(layout.chains.map((c) => [c, c.verts.map((v) => lerp(geoVert(c, v), v.schem, t))]));
     lastPts = pts;
     for (const { el: path, c, slot, isExtra } of routePaths) {
@@ -410,7 +413,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       if (isExtra) path.style.strokeDasharray = `${5 * f} ${3.5 * f}`;
     }
     for (const st of stations) {
-      st.el.style.strokeWidth = `${1.5 * f}px`;
+      st.el.style.strokeWidth = `${(st.r ? 1.8 : 1.1) * f}px`;
       if (st.r) {
         const p = nodeAt(st.g);
         st.el.setAttribute("cx", p[0]);
@@ -418,10 +421,11 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
         st.el.setAttribute("r", st.r * f);
         continue;
       }
+      st.el.style.display = st.trunk && dense ? "none" : "";
       const line = pts.get(st.c);
       const p = line[st.c.verts.findIndex((v) => Math.abs(v.idx - st.i) < 1e-9)];
       const dir = segDir(line, p);
-      const w = st.w * f, h = 7 * f;
+      const w = st.w * f, h = 4.2 * f;
       st.el.setAttribute("x", -h / 2);
       st.el.setAttribute("y", -w / 2);
       st.el.setAttribute("width", h);
@@ -435,7 +439,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       const p = nodeAt(picked);
       marker.setAttribute("cx", p[0]);
       marker.setAttribute("cy", p[1]);
-      marker.setAttribute("r", 13 * f);
+      marker.setAttribute("r", 10 * f);
       marker.style.strokeWidth = `${3 * f}px`;
       marker.setAttribute("visibility", "visible");
     }
@@ -464,7 +468,7 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
       let nx = -dir[1], ny = dir[0];
       if (nx < 0 || (nx === 0 && ny > 0)) [nx, ny] = [-nx, -ny];
       const pad = st.r || st.w / 2;
-      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, slant: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size });
+      items.push({ text: shortName(groups[g].name), p, nx, ny, pad: schem ? pad : Math.min(pad, 6), major, slant: schem && Math.abs(dir[1]) < 0.01 && !major, prio: groups[g].routes.size, minK: major ? 0 : Math.max(MIN_K_MINOR, st.trunk ? pz.fitScale() * 1.8 : 0) });
     }
     names = labelLayer(labelsG, items, obstacles);
     names.update(k);
@@ -506,14 +510,14 @@ export function renderSchematic(container, net, groups, layout, { onStop, onRout
     }
     for (const st of stations) {
       const p = st.r ? nodeAt(st.g) : st.p;
-      if (!p) continue;
+      if (!p || st.el.style.display === "none") continue;
       add(p[0] * k, p[1] * k, (st.r || st.w / 2) * f * k);
     }
   }
 
   draw();
   const content = view.getBBox();
-  const pz = panZoom(svg, view, content, (nk) => {
+  pz = panZoom(svg, view, content, (nk) => {
     k = nk;
     draw();
     names?.update(k);
@@ -601,9 +605,9 @@ function defaultGeo(groups, layout) {
 }
 
 // Hur stora linjer och hållplatser ritas i kartans enheter vid zoom k. På skärmen
-// växer de bara måttligt: mellan 0,6 och 1,6 gånger grundstorleken.
+// växer de bara måttligt: mellan 0,5 och 1,3 gånger grundstorleken.
 export function sizeFactor(k) {
-  return Math.max(0.6, Math.min(1.6, k)) / k;
+  return Math.max(0.5, Math.min(1.3, k)) / k;
 }
 
 // Hållplatsnamn och linjenummer i konstant skärmstorlek. Varje namn prövar några lägen
@@ -611,10 +615,11 @@ export function sizeFactor(k) {
 // en linje, en hållplats eller ett annat namn. Vanliga hållplatser utan plats döljs;
 // knutpunkter visas alltid.
 //
-// items: { text, p, nx, ny, pad, major, slant, prio } eller { badges: [{ text, c }], p, ox, oy, pad }.
+// items: { text, p, nx, ny, pad, major, slant, prio, minK } (minK: dolt vid mindre zoom) eller { badges: [{ text, c }], p, ox, oy, pad }.
 // p är i kartans enheter, pad hållplatsens radie i grundstorlek (skalas som i sizeFactor).
 // obstacles(add) lägger till hinder som cirklar add(x, y, r) i skärmens skala (kartan * k).
-const FS = 12.5, FS_MAJOR = 14;
+// Vanliga hållplatsnamn visas först när hållplatserna ligger minst ~14 px isär (24 px * k).
+const MIN_K_MINOR = 0.6;
 const BADGE_H = 17;
 
 export function labelLayer(group, items, obstacles = () => {}) {
@@ -642,9 +647,11 @@ export function labelLayer(group, items, obstacles = () => {}) {
   });
   let timer, k = 1;
 
+  // Storleken kommer från stilmallen (mindre på mobil).
+  const fontSize = (it, i) => (it.fs ??= parseFloat(getComputedStyle(nodes[i]).fontSize) || 12.5);
   const width = (it, i) => {
     if (it.w) return it.w;
-    const fs = it.major ? FS_MAJOR : FS;
+    const fs = fontSize(it, i);
     const w = nodes[i].getComputedTextLength?.() || 0;
     if (w > 0) it.w = w;
     return w || it.text.length * fs * 0.56;
@@ -652,7 +659,7 @@ export function labelLayer(group, items, obstacles = () => {}) {
 
   // Lägen för ett namn: geometri i skärmpixlar relativt hållplatsen.
   function candidates(it, i) {
-    const padS = it.pad * Math.max(0.6, Math.min(1.6, k));
+    const padS = it.pad * Math.max(0.5, Math.min(1.3, k));
     if (it.badges) {
       const horiz = Math.abs(it.ox) >= 0.38;
       const gap = padS + 4;
@@ -666,7 +673,7 @@ export function labelLayer(group, items, obstacles = () => {}) {
       }
       return [{ badge: true, x: x0, y: y0 }];
     }
-    const fs = it.major ? FS_MAJOR : FS;
+    const fs = fontSize(it, i);
     const w = width(it, i);
     const gap = padS + 5;
     const side = (nx, ny) => {
@@ -739,7 +746,7 @@ export function labelLayer(group, items, obstacles = () => {}) {
       const [px, py] = [it.p[0] * k, it.p[1] * k];
       const cands = candidates(it, i);
       const free = (j, grids) => shape(cands[j], it).every(([x, y, r]) => grids.every((g) => !g.hit(px + x, py + y, r)));
-      let pick = cands.findIndex((_, j) => free(j, [lines, labels]));
+      let pick = k < (it.minK || 0) ? -1 : cands.findIndex((_, j) => free(j, [lines, labels]));
       if (pick < 0 && (it.major || it.badges)) pick = cands.findIndex((_, j) => free(j, [labels]));
       if (pick < 0 && it.badges) pick = 0;
       nodes[i].classList.toggle("hidden", pick < 0);
@@ -903,6 +910,8 @@ export function panZoom(svg, view, box, onZoom, padding = null) {
     zoom: (f) => zoomAt(f, ...mid()),
     // Nuvarande vy: skärmpunkt = kartpunkt * k + [tx, ty].
     transform: () => ({ k, tx, ty }),
+    // Skalan när hela kartan visas.
+    fitScale: () => fitK,
     // Centrera på p, minst `zoom` gånger inzoomat jämfört med hela kartan.
     center(p, zoom) {
       const [cx, cy] = mid();
