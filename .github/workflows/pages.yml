@@ -1,4 +1,4 @@
-# Hämtar linjenätet varje natt och publicerar sidan på GitHub Pages.
+# Bygger linjenätet och tidtabellen från Trafiklab varje natt och publicerar sidan på GitHub Pages.
 name: Data och sida
 
 on:
@@ -28,8 +28,42 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      # Linjenätet (hållplatser och vägmatchade körvägar) från Busskollens API.
-      - run: node scripts/import-original.mjs
+      # Trafiklab Bronze tillåter 50 hämtningar av tidtabellen i månaden, så filen
+      # hämtas högst en gång per dygn och sparas i Actions-cachen mellan körningarna.
+      - name: Dagens datum
+        id: day
+        run: echo "day=$(TZ=Europe/Stockholm date +%F)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: gtfs
+          key: gtfs-${{ steps.day.outputs.day }}
+          restore-keys: gtfs-
+      - name: Tidtabell från Trafiklab
+        env:
+          TRAFIKLAB_STATIC_KEY: ${{ secrets.TRAFIKLAB_STATIC_KEY }}
+          DAY: ${{ steps.day.outputs.day }}
+        run: |
+          mkdir -p gtfs
+          if [ -z "$TRAFIKLAB_STATIC_KEY" ]; then
+            echo "::warning::TRAFIKLAB_STATIC_KEY saknas"
+          elif [ "$(cat gtfs/day 2>/dev/null)" = "$DAY" ]; then
+            echo "Dagens tidtabell finns redan i cachen"
+          elif curl -sSf --compressed -m 300 -o gtfs/new.zip "https://opendata.samtrafiken.se/gtfs/dintur/dintur.zip?key=$TRAFIKLAB_STATIC_KEY"; then
+            mv gtfs/new.zip gtfs/dintur.zip
+            echo "$DAY" > gtfs/day
+          else
+            echo "::warning::Kunde inte hämta tidtabellen från Trafiklab, använder den senast hämtade"
+          fi
+      # Linjenät, vägformer och tidtabell ur GTFS. Finns ingen GTFS-fil alls används
+      # Busskollens API (originalsidan) som reserv.
+      - name: Linjenät och tidtabell
+        run: |
+          if [ -f gtfs/dintur.zip ] && node scripts/build-data.mjs --zip gtfs/dintur.zip; then
+            echo "Byggt från Trafiklab"
+          else
+            echo "::warning::Ingen användbar GTFS-fil, hämtar linjenätet från Busskollens API"
+            node scripts/import-original.mjs
+          fi
       - name: Realtidsadress
         env:
           RT_API_URL: ${{ vars.RT_API_URL }}

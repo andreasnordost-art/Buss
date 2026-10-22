@@ -5,7 +5,11 @@
 //   node scripts/build-data.mjs --dir test/fixture   (uppackad GTFS, för test)
 //
 // Skriver public/data/network.json (hållplatser och linjeformer) och
-// public/data/days/ÅÅÅÅ-MM-DD.json (dagens turer med tider).
+// public/data/days/ÅÅÅÅ-MM-DD.json (dagens turer med tider). Sidan räknar fram
+// avgångar, bussarnas turer och reseförslag ur dagfilerna och realtidsproxyn.
+//
+// Hållplatslägen (A, B, C...) slås ihop till sin hållplats (parent_station), så att
+// id:n är desamma som i Busskollens API och sparade hållplatser fortsätter fungera.
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync } from "node:fs";
 import { unzipSync, strFromU8 } from "fflate";
@@ -32,6 +36,7 @@ eachRow(file("stops.txt"), (r) => {
   stopById.set(r.stop_id, { id: r.stop_id, name: r.stop_name.trim(), lat, lon, parent: r.parent_station || "" });
 });
 const inMunicipality = (s) => inBox([s.lon, s.lat], cfg.MUNICIPALITY_BBOX);
+const parentOf = (id) => (stopById.get(stopById.get(id)?.parent) ? stopById.get(id).parent : id);
 
 // --- Linjer och turer ------------------------------------------------------
 const routeById = new Map();
@@ -53,19 +58,22 @@ eachRow(stopTimesText, (r) => {
 });
 const keptTrips = new Set();
 for (const [id, [inside, total]] of share) {
-  if (inside / total >= cfg.MIN_SHARE_IN_MUNICIPALITY && tripById.has(id)) keptTrips.add(id);
+  if (inside >= cfg.MIN_STOPS_IN_MUNICIPALITY && tripById.has(id)) keptTrips.add(id);
 }
 
 // Andra varvet sparar stopptiderna för turerna vi behåller.
-const tripStops = new Map(); // trip_id -> [{seq, stop, time}]
+const tripStops = new Map(); // trip_id -> [{seq, stop, quay, time, sign}]
 eachRow(stopTimesText, (r) => {
   if (!keptTrips.has(r.trip_id)) return;
   let list = tripStops.get(r.trip_id);
   if (!list) tripStops.set(r.trip_id, (list = []));
   // Sortera på nummer, inte text: "10" ska komma efter "9".
-  list.push({ seq: Number(r.stop_sequence), stop: r.stop_id, time: parseTime(r.departure_time || r.arrival_time) });
+  list.push({ seq: Number(r.stop_sequence), stop: parentOf(r.stop_id), quay: r.stop_id, time: parseTime(r.departure_time || r.arrival_time), sign: r.stop_headsign || "" });
 });
 for (const list of tripStops.values()) list.sort((a, b) => a.seq - b.seq);
+// Skylten på bussen: trip_headsign, annars första hållplatsens stop_headsign
+// ("Bergsåker via Stenstan"), annars sista hållplatsen.
+const headsign = (trip, stops) => trip.trip_headsign || stops[0].sign || stopById.get(stops[stops.length - 1].stop)?.name || "";
 // Interpolera tider som saknas mellan tidpunkter.
 for (const list of tripStops.values()) fillTimes(list);
 
@@ -98,7 +106,7 @@ for (const tripId of keptTrips) {
   const key = hasShape ? `s:${trip.shape_id}` : `p:${dir}:${stops.map((s) => s.stop).join(">")}`;
   let v = entry.variants.get(key);
   if (!v) {
-    v = { key, dir, headsign: trip.trip_headsign || "", trips: 0, fromShape: hasShape, stops: stops.map((s) => s.stop), shapeId: trip.shape_id };
+    v = { key, dir, headsign: headsign(trip, stops), trips: 0, fromShape: hasShape, stops: stops.map((s) => s.stop), shapeId: trip.shape_id };
     entry.variants.set(key, v);
   }
   v.trips++;
@@ -107,9 +115,19 @@ for (const tripId of keptTrips) {
 
 inferDirections();
 
+// Regionlinjer (t.ex. 40 mot Östersund) ritas bara inom kommunen: varje variant
+// kortas till sträckan mellan första och sista hållplatsen i kommunen.
+for (const { variants } of routes.values()) {
+  for (const v of variants.values()) {
+    const inside = v.stops.map((id) => inMunicipality(stopById.get(id)));
+    v.shown = v.stops.slice(inside.indexOf(true), inside.lastIndexOf(true) + 1);
+  }
+}
+
 // --- Index och utdata --------------------------------------------------------
+// Bara hållplatser på kartan kommer med. Turernas hållplatser utanför kommunen blir -1.
 const usedStops = new Set();
-for (const list of tripStops.values()) for (const s of list) usedStops.add(s.stop);
+for (const { variants } of routes.values()) for (const v of variants.values()) v.shown.forEach((id) => usedStops.add(id));
 const stopList = [...usedStops].map((id) => stopById.get(id)).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name, "sv"));
 const stopIndex = new Map(stopList.map((s, i) => [s.id, i]));
 
@@ -140,8 +158,8 @@ const networkRoutes = routeList.map(({ route, variants }, ri) => {
         headsign: v.headsign,
         trips: v.trips,
         main: mainByDir.get(v.dir) === v,
-        path: variantPath(v),
-        stops: v.stops.map((id) => stopIndex.get(id)),
+        path: trimmedPath(v),
+        stops: v.shown.map((id) => stopIndex.get(id)),
       };
     }),
   };
@@ -149,10 +167,15 @@ const networkRoutes = routeList.map(({ route, variants }, ri) => {
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(`${outDir}/days`, { recursive: true });
+// Läge -> hållplats, för trafikstörningar som gäller ett visst läge.
+const quays = {};
+for (const list of tripStops.values()) for (const s of list) if (s.quay !== s.stop && stopIndex.has(s.stop)) quays[s.quay] = stopIndex.get(s.stop);
 const network = {
   generated: new Date().toISOString(),
+  source: "gtfs",
   stops: stopList.map((s) => [s.id, s.name, round(s.lat), round(s.lon)]),
   routes: networkRoutes,
+  quays,
 };
 
 // Turer per dag.
@@ -166,7 +189,12 @@ for (const date of dates) {
     if (!services(trip.service_id, date)) continue;
     const [ri, vi] = variantIndex.get(v);
     const stops = tripStops.get(tripId);
-    trips.push([tripId, ri, vi, trip.trip_headsign || v.headsign, stops.map((s) => stopIndex.get(s.stop)), stops.map((s) => s.time)]);
+    const row = [tripId, ri, vi, headsign(trip, stops), stops.map((s) => stopIndex.get(s.stop) ?? -1), stops.map((s) => s.time)];
+    // Skylten byter ibland text längs turen ("via Stenstan" försvinner): [[från index, text]].
+    const signs = [];
+    stops.forEach((s, i) => s.sign && s.sign !== (signs.length ? signs[signs.length - 1][1] : row[3]) && signs.push([i, s.sign]));
+    if (signs.length) row.push(signs);
+    trips.push(row);
   }
   trips.sort((a, b) => a[5][0] - b[5][0]);
   const perRoute = new Map();
@@ -198,6 +226,25 @@ async function loadZip() {
   const res = await fetch(url, { headers: { "Accept-Encoding": "gzip" } });
   if (!res.ok) throw new Error(`Kunde inte hämta GTFS (${res.status})`);
   return new Uint8Array(await res.arrayBuffer());
+}
+
+// Formen kortas på samma sätt som hållplatserna, vid punkterna närmast första
+// och sista hållplatsen i kommunen.
+function trimmedPath(v) {
+  const path = variantPath(v);
+  const stops = v.shown;
+  if (stops.length === v.stops.length) return path;
+  const nearest = (id, from) => {
+    const s = stopById.get(id);
+    let best = from, bestD = Infinity;
+    for (let i = from; i < path.length; i++) {
+      const d = (path[i][0] - s.lon) ** 2 * 0.2 + (path[i][1] - s.lat) ** 2;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  };
+  const start = nearest(stops[0], 0);
+  return path.slice(start, nearest(stops[stops.length - 1], start) + 1);
 }
 
 function variantPath(v) {

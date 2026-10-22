@@ -21,9 +21,9 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: worker
-      # Trafiklab-nyckeln behövs bara för /vehicles, /updates och /alerts direkt från
-      # Trafiklab. /api/* fungerar utan den.
-      - name: Trafiklab-nyckel (valfri)
+      # Trafiklab-nyckeln behövs för /vehicles, /updates och /alerts. Utan den använder
+      # sidan reserven, Busskollens API via /api/*.
+      - name: Trafiklab-nyckel
         if: env.TRAFIKLAB_RT_KEY != ''
         working-directory: worker
         run: printf '%s' "$TRAFIKLAB_RT_KEY" | npx --yes wrangler@3 secret put TRAFIKLAB_RT_KEY

@@ -2,15 +2,19 @@
 //
 // Hämtar Din Turs GTFS-RT-flöden från Trafiklab, avkodar dem till liten JSON
 // och cachar svaret så att API-nyckeln inte syns i webbläsaren och kvoten räcker.
+// Sidan räknar själv fram avgångar, turer och reseförslag ur tidtabellen plus dessa.
 //
 //   GET /vehicles  bussar inom kommunen
 //   GET /updates   förseningar per tur
 //   GET /alerts    trafikstörningar
 //
-//   GET /api/...   vidarebefordras till Busskollens API (originalsidan), som saknar
-//                  CORS. Ger hållplatser, avgångar, reseförslag, bussar och störningar.
+//   GET /api/...   reserv: vidarebefordras till Busskollens API (originalsidan), som
+//                  saknar CORS. Används bara om Trafiklab-datan inte går att få.
+//
+// Trafiklabs Bronze-nivå tillåter 30 000 anrop per månad för alla flöden tillsammans,
+// så cachetiderna (TTL_* i wrangler.toml) är långa. Med Silver kan de sänkas till 10–15 s.
 
-const BBOX = [17.9, 62.95, 19.5, 63.78]; // samma som MUNICIPALITY_BBOX i config.mjs
+const BBOX = [17.9, 63.08, 19.5, 63.78]; // samma som MUNICIPALITY_BBOX i config.mjs
 
 // Busskollens API: tillåtna adresser och cachetid i sekunder.
 const UPSTREAM = {
@@ -24,10 +28,12 @@ const UPSTREAM = {
 };
 
 const FEEDS = {
-  vehicles: { file: "VehiclePositions.pb", ttl: 15, transform: vehicles },
-  updates: { file: "TripUpdates.pb", ttl: 30, transform: updates },
-  alerts: { file: "ServiceAlerts.pb", ttl: 300, transform: alerts },
+  vehicles: { file: "VehiclePositions.pb", ttl: 60, transform: vehicles },
+  updates: { file: "TripUpdates.pb", ttl: 90, transform: updates },
+  alerts: { file: "ServiceAlerts.pb", ttl: 600, transform: alerts },
 };
+// Svarar Trafiklab med fel (t.ex. slut på kvoten) frågar vi inte igen på så här länge.
+const ERROR_TTL = 300;
 
 export default {
   async fetch(request, env, ctx) {
@@ -36,23 +42,28 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
     const api = url.pathname.match(/^\/api\/([a-z-]+)\/?$/);
     if (api) return upstream(api[1], url, env, ctx, cors);
-    const feed = FEEDS[url.pathname.replace(/^\/+|\/+$/g, "")];
+    const name = url.pathname.replace(/^\/+|\/+$/g, "");
+    const feed = FEEDS[name];
     if (!feed) return json({ error: "Okänd adress" }, 404, cors);
+    if (!env.TRAFIKLAB_RT_KEY) return json({ error: "TRAFIKLAB_RT_KEY saknas" }, 503, cors);
 
-    const ttl = Number(env[`TTL_${url.pathname.slice(1).toUpperCase()}`]) || feed.ttl;
+    const ttl = Number(env[`TTL_${name.toUpperCase()}`]) || feed.ttl;
     const cacheKey = new Request(`https://cache.local/${feed.file}`);
-    const cache = caches.default;
-    let res = await cache.match(cacheKey);
+    const cache = globalThis.caches?.default;
+    let res = await cache?.match(cacheKey);
     if (!res) {
       const feedRes = await fetch(
         `https://opendata.samtrafiken.se/gtfs-rt/${env.OPERATOR || "dintur"}/${feed.file}?key=${env.TRAFIKLAB_RT_KEY}`,
         { headers: { "Accept-Encoding": "gzip" } },
       );
-      if (!feedRes.ok) return json({ error: `Trafiklab svarade ${feedRes.status}` }, 502, cors);
-      const msg = decodeFeed(new Uint8Array(await feedRes.arrayBuffer()));
-      const body = JSON.stringify({ time: msg.time, data: feed.transform(msg.entities) });
-      res = new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${ttl}` } });
-      ctx.waitUntil(cache.put(cacheKey, res.clone()));
+      if (feedRes.ok) {
+        const msg = decodeFeed(new Uint8Array(await feedRes.arrayBuffer()));
+        const body = JSON.stringify({ time: msg.time, data: feed.transform(msg.entities) });
+        res = new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${ttl}` } });
+      } else {
+        res = json({ error: `Trafiklab svarade ${feedRes.status}` }, 502, { "Cache-Control": `public, max-age=${ERROR_TTL}` });
+      }
+      if (cache) ctx.waitUntil(cache.put(cacheKey, res.clone()));
     }
     const out = new Response(res.body, res);
     for (const [k, v] of Object.entries(cors)) out.headers.set(k, v);
@@ -65,12 +76,12 @@ async function upstream(name, url, env, ctx, cors) {
   if (ttl == null) return json({ error: "Okänd adress" }, 404, cors);
   const target = `${env.ORIGINAL_API || "https://ovik-live.andreasnordost.chatgpt.site"}/api/${name}${url.search}`;
   const cacheKey = new Request(target);
-  const cache = caches.default;
-  let res = await cache.match(cacheKey);
+  const cache = globalThis.caches?.default;
+  let res = await cache?.match(cacheKey);
   if (!res) {
     const up = await fetch(target, { headers: { Accept: "application/json" } });
     res = new Response(up.body, { status: up.status, headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${up.ok ? ttl : 5}` } });
-    if (up.ok) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+    if (up.ok && cache) ctx.waitUntil(cache.put(cacheKey, res.clone()));
   }
   const out = new Response(res.body, res);
   for (const [k, v] of Object.entries(cors)) out.headers.set(k, v);
@@ -112,18 +123,23 @@ function vehicles(entities) {
 }
 
 function updates(entities) {
-  // { tripId: { d: senast kända försening i sekunder, s: { stopId: försening }, x: inställd } }
+  // { tripId: { s: [[stop_sequence, försening i sekunder, 1 om hållplatsen hoppas över]], x: 1 om inställd } }
+  // Förseningen gäller från sin hållplats och framåt tills nästa rad, så rader med
+  // samma försening som föregående tas bort.
   const out = {};
   for (const e of entities) {
     const u = e.tripUpdate;
     if (!u?.trip?.tripId) continue;
-    const entry = { d: u.delay ?? null, s: {} };
-    if (u.trip.scheduleRelationship === 3) entry.x = true;
-    for (const st of u.stopTimeUpdates) {
-      const delay = st.departure?.delay ?? st.arrival?.delay;
-      if (st.stopId && delay != null) entry.s[st.stopId] = delay;
-      if (st.stopId && st.scheduleRelationship === 1) entry.s[st.stopId] = "skip";
-      if (delay != null) entry.d = delay;
+    const entry = { s: [] };
+    if (u.trip.scheduleRelationship === 3) entry.x = 1;
+    let last = u.delay ?? null;
+    if (last != null) entry.s.push([0, last]);
+    for (const st of u.stopTimeUpdates.slice().sort((a, b) => (a.stopSequence ?? 0) - (b.stopSequence ?? 0))) {
+      if (st.stopSequence == null) continue;
+      const delay = st.departure?.delay ?? st.arrival?.delay ?? last;
+      if (st.scheduleRelationship === 1) entry.s.push([st.stopSequence, delay, 1]);
+      else if (delay != null && delay !== last) entry.s.push([st.stopSequence, delay]);
+      last = delay;
     }
     out[u.trip.tripId] = entry;
   }
