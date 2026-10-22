@@ -1,11 +1,13 @@
 // Busskollen Övik: karta, linjenät, avgångar, bussar och reseförslag.
 //
 // Data:
-//   data/network.json   hållplatser och vägmatchade linjeformer (byggs varje natt)
-//   CONFIG.api + /api/  live: avgångar, bussar, resor, reseförslag och störningar
-//                       (realtidsproxyn vidarebefordrar till Busskollens API)
+//   data/network.json   hållplatser och linjeformer från Trafiklab (byggs varje natt)
+//   data/days/          tidtabellen per dag; live.js räknar fram avgångar, bussarnas
+//                       turer och reseförslag ur den och realtiden från proxyn
+//   CONFIG.api + /api/  reserv: Busskollens API via proxyn, om den egna datan saknas
 
 import { groupStops, distance, shortName } from "./network.js";
+import { createLive } from "./live.js";
 import { layoutSchematic, renderSchematic } from "./schematic.js";
 
 const CONFIG = { api: "", vehicleSeconds: 15, ...(window.BUSS_CONFIG || {}) };
@@ -43,7 +45,7 @@ const state = {
   favs: store.get("favs", []), // hållplats-id:n
   mytrips: store.get("mytrips", []), // [{ name, from, to }] med hållplats-id:n
 };
-let net, groups, stopGroup, labelToGroup, groupById, map;
+let net, groups, stopGroup, labelToGroup, groupById, map, live;
 
 boot().catch((err) => {
   console.error(err);
@@ -58,6 +60,10 @@ async function boot() {
   groups.forEach((g) => (g.id = net.stops[g.stops[0]][0]));
   groupById = new Map();
   groups.forEach((g, gi) => g.stops.forEach((s) => groupById.set(net.stops[s][0], gi)));
+  if (net.source === "gtfs") {
+    live = createLive(net, { groups, stopGroup }, CONFIG.api, getJSON);
+    await live.ready.catch((err) => { console.warn("Egen tidtabell saknas, använder reserven", err); live = null; });
+  }
   buildUi();
   initMap();
   restoreFromUrl();
@@ -77,6 +83,13 @@ async function getJSON(url, opts) {
   return res.json();
 }
 const api = (path, params) => getJSON(`${CONFIG.api}/api/${path}${params ? `?${new URLSearchParams(params)}` : ""}`);
+// Egen data från Trafiklab först, Busskollens API som reserv.
+async function fetchLive(own, fallback) {
+  if (live) {
+    try { return await own(live); } catch (err) { console.warn(err); }
+  }
+  return fallback();
+}
 
 const timeFmt = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
 const dayFmt = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
@@ -751,7 +764,7 @@ async function renderStop(fresh) {
   }
   let data;
   try {
-    data = await api("departures", { stopId: g.id });
+    data = await fetchLive((l) => l.departures(g.stops), () => api("departures", { stopId: g.id }));
   } catch {
     if (state.group === gi) put($("#deps"), h("p", { class: "muted" }, "Avgångarna kunde inte hämtas just nu. Försök igen om en stund."));
     return;
@@ -892,7 +905,7 @@ async function fetchPlans(from, to, at = "", want = 4, onUpdate = null) {
   const seen = new Set();
   let plans = [];
   for (let i = 0; i < 4; i++) {
-    const res = await api("plan", { from, to, at });
+    const res = await fetchLive((l) => l.plan(groupById.get(from), groupById.get(to), at), () => api("plan", { from, to, at }));
     plans = bestPlans([...plans, ...res.plans]);
     if (plans.length) onUpdate?.(plans, plans.length < want);
     if (plans.length >= want || !res.nextSearch || seen.has(res.nextSearch)) break;
@@ -973,7 +986,7 @@ function renderMyTrips() {
 
 function pollAlerts() {
   poll(async () => {
-    const { alerts } = await api("alerts");
+    const { alerts } = await fetchLive((l) => l.alerts(), () => api("alerts"));
     // Samma meddelande kommer ofta två gånger (Påverkan och Information): slå ihop.
     const byKey = new Map();
     for (const a of alerts) {
@@ -1038,7 +1051,7 @@ function pollVehicles() {
   poll(async () => {
     if (document.visibilityState !== "visible") return;
     try {
-      const { vehicles } = await api("vehicles");
+      const { vehicles } = await fetchLive((l) => l.vehicles(), () => api("vehicles"));
       renderVehicles(vehicles);
       setStatus(`Live · ${timeFmt.format(new Date())}`, "live");
       if (state.pendingBus) { const id = state.pendingBus; state.pendingBus = null; if (state.vehicles.has(id)) openBus(id); }
@@ -1128,7 +1141,7 @@ async function refreshBus() {
   const entry = state.vehicles.get(id);
   if (!entry) return renderBus(null, null);
   let journey = null;
-  try { journey = (await api("journey", { vehicleId: id })).journey; } catch {}
+  try { journey = (await fetchLive((l) => l.journey(id), () => api("journey", { vehicleId: id }))).journey; } catch {}
   if (state.bus !== id) return;
   state.journey = journey;
   renderBus(entry, journey);

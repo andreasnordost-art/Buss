@@ -1,7 +1,7 @@
 // Gör sidan installerbar och snabb att öppna igen. Sidans egna filer visas direkt
 // från cachen och uppdateras i bakgrunden; live-data hämtas alltid från nätet.
-const CACHE = "busskollen-v1";
-const SHELL = ["./", "index.html", "style.css", "app.js", "network.js", "schematic.js", "config.js", "icon.svg", "manifest.webmanifest"];
+const CACHE = "busskollen-v2";
+const SHELL = ["./", "index.html", "style.css", "app.js", "live.js", "network.js", "schematic.js", "config.js", "icon.svg", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -21,8 +21,8 @@ self.addEventListener("fetch", (e) => {
         if (res.ok) cache.put(e.request, res.clone());
         return res;
       });
-      // Linjenätet ändras varje natt: hämta det från nätet först.
-      if (url.pathname.endsWith("network.json")) return fresh.catch(() => cached);
+      // Linjenätet och tidtabellen ändras varje natt: hämta dem från nätet först.
+      if (url.pathname.includes("/data/")) return fresh.catch(() => cached);
       return cached ? (fresh.catch(() => {}), cached) : fresh;
     }),
   );

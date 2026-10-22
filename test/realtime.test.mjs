@@ -84,3 +84,22 @@ res = await worker.fetch(apiReq("/api/admin/import"), apiEnv, ctx);
 assert.equal(res.status, 404, "bara kända adresser vidarebefordras");
 assert.equal(calls, 1);
 console.log("proxy ok");
+
+// Förseningar per tur som [stop_sequence, försening], och felsvar från Trafiklab
+// cachas så att en slut kvot inte ger ett nytt anrop för varje besökare.
+calls = 0;
+globalThis.fetch = async (url) => {
+  calls++;
+  return String(url).includes("TripUpdates") ? new Response(buf) : new Response("Too many requests", { status: 429 });
+};
+res = await worker.fetch(apiReq("/updates"), env, ctx);
+assert.deepEqual((await res.json()).data, { T1: { s: [[2, -45], [3, 120]] } });
+res = await worker.fetch(apiReq("/alerts"), env, ctx);
+assert.equal(res.status, 502);
+await new Promise((r) => setTimeout(r, 10));
+res = await worker.fetch(apiReq("/alerts"), env, ctx);
+assert.equal(res.status, 502);
+assert.equal(calls, 2, "felet ska komma från cachen andra gången");
+res = await worker.fetch(apiReq("/updates"), { ...env, TRAFIKLAB_RT_KEY: "" }, ctx);
+assert.equal(res.status, 503, "utan nyckel svarar proxyn direkt, så att sidan tar reserven");
+console.log("updates ok");

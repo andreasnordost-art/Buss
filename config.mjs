@@ -3,14 +3,16 @@
 // Din Tur i Trafiklabs GTFS Regional.
 export const OPERATOR = "dintur";
 
-// Örnsköldsviks kommun, ungefärlig ruta [väst, syd, öst, norr].
-export const MUNICIPALITY_BBOX = [17.9, 62.95, 19.5, 63.78];
+// Örnsköldsviks kommun, ungefärlig ruta [väst, syd, öst, norr]. Södra kanten går
+// norr om Docksta så att Kramforslinjer som 221 inte räknas in.
+export const MUNICIPALITY_BBOX = [17.9, 63.08, 19.5, 63.78];
 
 // Centralorten. En linje vars hållplatser alla ligger här räknas som Tätort.
 export const TOWN_BBOX = [18.57, 63.235, 18.85, 63.36];
 
-// Andel av en turs hållplatser som måste ligga i kommunen för att turen ska tas med.
-export const MIN_SHARE_IN_MUNICIPALITY = 0.5;
+// Antal hållplatser i kommunen som en tur måste ha för att tas med. Regionlinjer
+// (40, 50) kommer med men ritas bara inom kommunen.
+export const MIN_STOPS_IN_MUNICIPALITY = 2;
 
 // Tvinga en linje till Tätort eller Landsbygd om geografin gissar fel,
 // t.ex. { "12": "landsbygd" }. Nyckeln är linjenumret som resenärer ser.
@@ -28,6 +30,6 @@ export const TIMEZONE = "Europe/Stockholm";
 // respektive vanlig linje. Linjer med färre turer räknas som övriga turer.
 export const TIER_TRIPS = { stom: 20, linje: 10 };
 
-// Busskollens API (originalsidan). Ger linjenätet, avgångar, reseförslag och bussar
-// tills egna Trafiklab-nycklar finns. Realtidsproxyn vidarebefordrar /api/* hit.
+// Busskollens API (originalsidan). Reserv om Trafiklab-datan inte går att få:
+// bygget använder det utan GTFS-fil och sidan via proxyns /api/*.
 export const ORIGINAL_API = "https://ovik-live.andreasnordost.chatgpt.site";
