@@ -1,6 +1,6 @@
 // Gör sidan installerbar och snabb att öppna igen. Sidans egna filer visas direkt
 // från cachen och uppdateras i bakgrunden; live-data hämtas alltid från nätet.
-const CACHE = "busskollen-v2";
+const CACHE = "busskollen-v3";
 const SHELL = ["./", "index.html", "style.css", "app.js", "live.js", "network.js", "schematic.js", "config.js", "icon.svg", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
