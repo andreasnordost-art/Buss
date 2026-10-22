@@ -1,5 +1,13 @@
 # Busskollen Övik
 
+<p align="center">
+  <a href="https://andreasnordost-art.github.io/Buss/">
+    <img src="https://img.shields.io/badge/%F0%9F%9A%8C%20%C3%96ppna%20Busskollen-andreasnordost--art.github.io%2FBuss-2e7d32?style=for-the-badge" alt="Öppna Busskollen">
+  </a>
+</p>
+
+<p align="center"><b>👉 <a href="https://andreasnordost-art.github.io/Buss/">Starta sidan här: andreasnordost-art.github.io/Buss</a></b></p>
+
 Bussarna i Örnsköldsvik live på kartan, med avgångar, reseförslag och trafikstörningar.
 Data från Din Tur via [Trafiklab](https://www.trafiklab.se/) (CC0).
 
