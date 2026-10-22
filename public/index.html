@@ -53,12 +53,20 @@
           </button>
           <div id="layers" class="popover" hidden>
             <fieldset>
-              <legend>Linjer på kartan</legend>
+              <legend>Linjer</legend>
               <label><input type="radio" name="lines" value="main" checked> Huvudlinjer <small>regelbunden trafik</small></label>
               <label><input type="radio" name="lines" value="all"> Alla linjer <small>även skol- och specialturer</small></label>
-              <label><input type="checkbox" id="alt-toggle"> Avvikande körvägar <small>turer som går en annan väg</small></label>
+              <label class="map-only"><input type="checkbox" id="alt-toggle"> Avvikande körvägar <small>turer som går en annan väg</small></label>
             </fieldset>
-            <fieldset>
+            <fieldset class="schem-only">
+              <legend>Visa i linjenätet</legend>
+              <label><input type="checkbox" data-schem-layer="buses"> Bussar <small>bussarna just nu</small></label>
+              <label><input type="checkbox" data-schem-layer="stations"> Hållplatser <small>ringar och gångvägar</small></label>
+              <label><input type="checkbox" data-schem-layer="names"> Hållplatsnamn</label>
+              <label><input type="checkbox" data-schem-layer="badges"> Linjenummer <small>vid ändhållplatserna</small></label>
+              <label><input type="checkbox" data-schem-layer="arrows"> Riktningspilar <small>på enkelriktade slingor</small></label>
+            </fieldset>
+            <fieldset class="map-only">
               <legend>Kartstil</legend>
               <div class="styles">
                 <label><input type="radio" name="style" value="light" checked><span class="sw light"></span>Ljus</label>

@@ -35,6 +35,7 @@ const state = {
   extra: store.get("extra", false), // alla linjer, även skol- och specialturer
   alt: store.get("alt", false), // avvikande körvägar
   style: store.get("style", "light"),
+  schemOff: store.get("schemOff", []), // släckta lager i linjenätet
   schem: null,
   route: null, // vald linje (index)
   group: null, // vald hållplatsgrupp
@@ -175,6 +176,16 @@ function buildUi() {
   }
   $("#alt-toggle").checked = state.alt;
   $("#alt-toggle").addEventListener("change", (e) => { state.alt = e.target.checked; store.set("alt", state.alt); applyMapFilters(); });
+  // Lager i linjenätet: varje släckt lager blir en klass på linjenätets ruta.
+  for (const c of document.querySelectorAll("[data-schem-layer]")) {
+    c.checked = !state.schemOff.includes(c.dataset.schemLayer);
+    c.addEventListener("change", () => {
+      state.schemOff = [...document.querySelectorAll("[data-schem-layer]")].filter((x) => !x.checked).map((x) => x.dataset.schemLayer);
+      store.set("schemOff", state.schemOff);
+      markSchemLayers();
+    });
+  }
+  markSchemLayers();
   for (const r of document.querySelectorAll('input[name="style"]')) {
     r.checked = r.value === state.style;
     r.addEventListener("change", () => setStyle(r.value));
@@ -202,6 +213,10 @@ function buildUi() {
   renderCommon();
   renderFavs();
   renderMyTrips();
+}
+
+function markSchemLayers() {
+  for (const c of document.querySelectorAll("[data-schem-layer]")) $("#schematic").classList.toggle(`no-${c.dataset.schemLayer}`, !c.checked);
 }
 
 function showTab(id) {

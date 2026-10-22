@@ -268,7 +268,10 @@ button.dep-in:hover { background: var(--soft); }
 .schemwrap.over-map { background: transparent; }
 #map { transition: opacity 0.9s ease-in-out; }
 #map.faded { opacity: 0; }
-.schem-view .layers, .schem-view #follow, .schem-view .maplibregl-ctrl-bottom-right { display: none; }
+.schem-view .map-only, body:not(.schem-view) .schem-only { display: none; }
+.schemwrap.no-buses .buses, .schemwrap.no-stations .stations > :not(.picked), .schemwrap.no-names .lbl,
+.schemwrap.no-badges .tbadges, .schemwrap.no-arrows .arrow-layer { display: none; }
+.schem-view #follow, .schem-view .maplibregl-ctrl-bottom-right { display: none; }
 
 /* Zoomknappar för linjenätet */
 .schemctl { display: none; position: absolute; right: 12px; bottom: 24px; z-index: 2; flex-direction: column; background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
